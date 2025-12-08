@@ -1,0 +1,6 @@
+bin/
+tb
+thunderbird-cli
+*.exe
+logs/
+dist/
