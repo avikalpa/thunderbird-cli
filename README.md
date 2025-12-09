@@ -33,6 +33,7 @@ Notes:
 - Searches read mbox files directly; first runs on big folders take longer. Use `tb mail index ...` to cache for speed.
 - Read-only by design: the only write we perform is an optional cache file `.tb-index.json` in the profile directory. We never mutate mbox/config; sending uses Thunderbird itself.
 - `--send` relies on Thunderbird’s `-compose ... -send` support; if it fails, drop `--send` to open the composer window instead.
+- Optional Postgres cache: set `TB_PG_DSN` to a Postgres DSN (`postgres://user:pass@host/db`). When set, searches read from Postgres (fast), and new scans/indexing upsert into `tb_messages`. You can override the mail binary with `THUNDERBIRD_BIN` or a flatpak ID with `THUNDERBIRD_FLATPAK_ID`.
 
 ### Binary placement
 - Preferred binary name: `tb` (build to `bin/tb`).
@@ -48,6 +49,7 @@ Notes:
   `tb mail index --profile myprofile --tail 0`  
   `tb search --profile myprofile --limit 0 "keyword"`
 - Fast text grep: `tb search --profile myprofile --raw --limit 50 "keyword" --no-fancy`
+- Postgres-backed search: export `TB_PG_DSN=postgres://...` then use `tb search ...`; the CLI will prefer PG results and upsert new scans automatically.
 
 ## Tests
 - Quick check: `./tests/run.sh`  
@@ -61,6 +63,4 @@ Notes:
 Apache License 2.0 — Copyright 2025 Avikalpa Kundu.
 
 ## Logging & drills
-- Logs live under `logs/` (gitignored). Scripts emit start/end/duration metadata alongside results.
-- Broad search drills: `./scripts/smoke_parallel.sh` (env: `BIN`, `PROFILE`, `ACCOUNT`, `LOG_DIR`). Runs `cfa` (account + all), `cesc`, `bill`, and `court*` searches in parallel; outputs tables by default.
-- Timeline search helper: `./scripts/search_timeline.sh "query" folder_path` (env: `PROFILE`, `BIN`, `LOG_DIR`, `LIMIT`, `TAIL`, `NO_INDEX`).
+- (Deprecated) Older log scripts were removed; prefer `tb search` and `tb mail fetch` directly, or wire into your own cron/systemd timers.

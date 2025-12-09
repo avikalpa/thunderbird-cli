@@ -5,6 +5,7 @@
 - Profiles: use `tb mail profiles` to pick a profile; `tb mail folders --profile <name>` to discover folders. Prefer explicit `--profile` to avoid touching the wrong account.
 - Reading/searching: `tb mail recent <folder> [--limit N] [--query text]` for quick previews; `tb search "<query>" [--since/--ds] [--till/--dt] [--account/--ac email] [--max-messages] [--raw] [--no-fancy] [--no-index]` for deeper scans. Default output is a table with snippets; `--no-fancy` gives plain lines for machine consumption. `--raw` uses ripgrep for fast text hits.
 - Indexing/cache: `tb mail index ...` writes `.tb-index.json` for faster repeated searches. Delete it to drop the cache; add `--no-index` to bypass it temporarily. The cache auto-refreshes when stale or incomplete.
+- Postgres cache: set `TB_PG_DSN` to enable a Postgres-backed store (`tb_messages` table). Searches will prefer PG; scans/indexing upsert automatically. Override mail binary with `THUNDERBIRD_BIN` or `THUNDERBIRD_FLATPAK_ID` for flatpak.
 - Sending: `tb mail compose ...` opens Thunderbird’s composer. Only add `--send` when auto-send is desired; otherwise default to opening for review.
 - Workflow: keep commands reproducible, avoid actions that mutate profile data, and prefer explicit filters (profile/account/folder/date) when narrowing evidence.
 

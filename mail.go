@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"flag"
 	"fmt"
@@ -386,6 +387,27 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		return rawSearch(query, filtered, limit, noFancy)
 	}
 
+	ctx := context.Background()
+	var store *pgStore
+	if os.Getenv("TB_PG_DSN") != "" {
+		if pg, err := openPG(); err == nil {
+			store = pg
+			defer pg.Close()
+		}
+	}
+	if store != nil {
+		if hits, err := store.Search(ctx, queryOptions{
+			query:      query,
+			account:    accountEmail,
+			folderLike: folderLike,
+			since:      since,
+			till:       till,
+			limit:      limit,
+		}); err == nil && len(hits) > 0 {
+			return printHits(hits, limit, noFancy)
+		}
+	}
+
 	var cache *IndexFile
 	if !noIndex {
 		cache, _ = loadIndex(indexPath(profile))
@@ -468,6 +490,9 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 					folderIdx = &idxEntry
 					more = filterMsgs(idxEntry.Messages)
 					changed = true
+					if store != nil {
+						_ = store.Upsert(ctx, idxEntry.Messages)
+					}
 				}
 			}
 		}
@@ -492,54 +517,7 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 	if cache != nil && changed {
 		_ = saveIndex(indexPath(profile), cache)
 	}
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].When.IsZero() && hits[j].When.IsZero() {
-			return hits[i].Date > hits[j].Date
-		}
-		if hits[i].When.IsZero() {
-			return false
-		}
-		if hits[j].When.IsZero() {
-			return true
-		}
-		return hits[i].When.After(hits[j].When)
-	})
-	if limit > 0 && len(hits) > limit {
-		hits = hits[:limit]
-	}
-
-	if noFancy {
-		for _, h := range hits {
-			date := h.Date
-			if !h.When.IsZero() {
-				date = h.When.Format("2006-01-02 15:04")
-			}
-			fmt.Printf("%s | %s | %s | %s | %s\n",
-				date,
-				truncate(h.Folder, 22),
-				truncate(h.From, 40),
-				truncate(h.Subject, 60),
-				truncate(h.Snippet, 120))
-		}
-		return nil
-	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "Date\tFolder\tFrom\tSubject\tSnippet\n")
-	for _, h := range hits {
-		date := h.Date
-		if !h.When.IsZero() {
-			date = h.When.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			date,
-			truncate(h.Folder, 24),
-			truncate(h.From, 40),
-			truncate(h.Subject, 60),
-			truncate(h.Snippet, 120))
-	}
-	w.Flush()
-	return nil
+	return printHits(hits, limit, noFancy)
 }
 
 func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) error {
@@ -890,6 +868,57 @@ func makeMatcher(q string, fuzzy bool) matcherFunc {
 		}
 		return true
 	}
+}
+
+func printHits(hits []MailSummary, limit int, noFancy bool) error {
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].When.IsZero() && hits[j].When.IsZero() {
+			return hits[i].Date > hits[j].Date
+		}
+		if hits[i].When.IsZero() {
+			return false
+		}
+		if hits[j].When.IsZero() {
+			return true
+		}
+		return hits[i].When.After(hits[j].When)
+	})
+	if limit > 0 && len(hits) > limit {
+		hits = hits[:limit]
+	}
+
+	if noFancy {
+		for _, h := range hits {
+			date := h.Date
+			if !h.When.IsZero() {
+				date = h.When.Format("2006-01-02 15:04")
+			}
+			fmt.Printf("%s | %s | %s | %s | %s\n",
+				date,
+				truncate(h.Folder, 22),
+				truncate(h.From, 40),
+				truncate(h.Subject, 60),
+				truncate(h.Snippet, 120))
+		}
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "Date\tFolder\tFrom\tSubject\tSnippet\n")
+	for _, h := range hits {
+		date := h.Date
+		if !h.When.IsZero() {
+			date = h.When.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			date,
+			truncate(h.Folder, 24),
+			truncate(h.From, 40),
+			truncate(h.Subject, 60),
+			truncate(h.Snippet, 120))
+	}
+	w.Flush()
+	return nil
 }
 
 func accountForPath(path string, dirToAccount map[string]string) string {
