@@ -8,6 +8,13 @@
 - Sending: `tb mail compose ...` opens Thunderbird’s composer. Only add `--send` when auto-send is desired; otherwise default to opening for review.
 - Workflow: keep commands reproducible, avoid actions that mutate profile data, and prefer explicit filters (profile/account/folder/date) when narrowing evidence.
 
+## Operational tips (time-sensitive/OTP/search)
+- Always sync before hunting recent mail: `tb mail fetch --profile <p>` (uses `betterbird`/`thunderbird`/`flatpak run eu.betterbird.Betterbird`; override with `THUNDERBIRD_BIN` or `THUNDERBIRD_FLATPAK_ID`). If headless fetch fails, open Betterbird/Thunderbird GUI and click “Get Messages”.
+- Include all folders (Inbox + Junk/Spam/Trash) when searching OTPs or alerts; use broad folder matches like `--folder gour.top` or omit folder filter, then narrow if noisy.
+- Time-box searches when the user says “just now”: add `--since YYYY-MM-DD` (today) or a narrow window; prefer fuzzy tokens (`--fuzzy "otp code"`, or search for sender/subject fragments) instead of a single hard keyword.
+- After locating a candidate, dump the full body with `tb mail show --folder <path> --query "<subject fragment>" --limit 1 --thread` to extract the code.
+- If OTPs often land in Junk, explicitly scan it: `tb search --profile <p> --account <acct> --folder Junk --limit 0 "otp"` or use `--raw --no-fancy "otp"`.
+
 ## TODOs
 - Add richer threading support (walk In-Reply-To/References, multi-folder threads).
 - Improve fuzzy search (token + regex) and expose saved searches.

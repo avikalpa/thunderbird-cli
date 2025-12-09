@@ -24,7 +24,7 @@ go build -o bin/tb ./...
 - Shortcut: `tb search ...` is equivalent to `tb mail search ...`.
 - `tb mail show --folder <name> --query "<text>" [--account ...] [--limit N] [--thread]` — print full message(s); `--thread` shows all messages with the same subject in that folder.
 - `tb mail compose --to a@b --subject "Hi" --body "text" [--cc ...] [--send]` — launch Thunderbird composer (adds `-send` if you set `--send`).
-- `tb mail fetch [--profile p]` — trigger Thunderbird/Betterbird to sync mail headlessly (needs `betterbird` or `thunderbird` in PATH or `THUNDERBIRD_BIN` pointing to the binary).
+- `tb mail fetch [--profile p]` — trigger Thunderbird/Betterbird to sync mail headlessly (uses `THUNDERBIRD_BIN`, or `betterbird`/`thunderbird` in PATH, or `flatpak run eu.betterbird.Betterbird` as a fallback; override Flatpak ID with `THUNDERBIRD_FLATPAK_ID`).
 
 Notes:
 - Default Thunderbird root is `~/.thunderbird`; override with `THUNDERBIRD_HOME`.

@@ -543,10 +543,7 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 }
 
 func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) error {
-	bin, err := findMailBinary()
-	if err != nil {
-		return err
-	}
+	baseCmd := findMailCommand()
 	var parts []string
 	parts = append(parts, fmt.Sprintf("to=%s", to))
 	if cc != "" {
@@ -563,7 +560,7 @@ func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) 
 	if sendNow {
 		args = append(args, "-send")
 	}
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if !openComposer && sendNow {
@@ -628,12 +625,9 @@ func (a *App) fetch(profileName string) error {
 	if err != nil {
 		return err
 	}
-	bin, err := findMailBinary()
-	if err != nil {
-		return err
-	}
+	baseCmd := findMailCommand()
 	args := []string{"-headless", "-P", profile.Name, "-mail"}
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -818,6 +812,29 @@ func findMailbox(boxes []Mailbox, name string) (Mailbox, bool) {
 		return fallback, true
 	}
 	return Mailbox{}, false
+}
+
+func findMailCommand() []string {
+	if env := strings.TrimSpace(os.Getenv("THUNDERBIRD_BIN")); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return []string{env}
+		}
+	}
+	if path, err := exec.LookPath("betterbird"); err == nil {
+		return []string{path}
+	}
+	if path, err := exec.LookPath("thunderbird"); err == nil {
+		return []string{path}
+	}
+	if flatpak, err := exec.LookPath("flatpak"); err == nil {
+		id := strings.TrimSpace(os.Getenv("THUNDERBIRD_FLATPAK_ID"))
+		if id == "" {
+			id = "eu.betterbird.Betterbird"
+		}
+		return []string{flatpak, "run", id}
+	}
+	// Fallback; caller will fail if not present.
+	return []string{"thunderbird"}
 }
 
 func readMailboxRecent(box Mailbox, limit int, query string) ([]MailSummary, error) {
