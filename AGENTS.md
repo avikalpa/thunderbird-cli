@@ -14,6 +14,7 @@
 - Add message export (JSON/mbox slice) for downstream tools.
 - Harden date parsing with additional legacy formats and timezone edge cases.
 - Build optional attachment/text extraction helpers with size guards.
+- Add configurable fetch helper (env `THUNDERBIRD_BIN`) and detection of install paths.
 
 ## Nice to have
 - Interactive TUI wrapper for browsing folders/results.

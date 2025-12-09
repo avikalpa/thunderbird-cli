@@ -197,6 +197,13 @@ func mailMain(args []string) {
 		if err := app.compose(*to, *cc, *subject, *body, *openComposer, *sendNow); err != nil {
 			log.Fatalf("compose: %v", err)
 		}
+	case "fetch":
+		cmd := flag.NewFlagSet("fetch", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		cmd.Parse(args[1:])
+		if err := app.fetch(*profileName); err != nil {
+			log.Fatalf("fetch: %v", err)
+		}
 	case "help", "-h", "--help":
 		mailUsage()
 	case "show":
@@ -232,6 +239,7 @@ func mailUsage() {
 	log.Println("  recent <folder> [--query q]          show recent messages from a folder")
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--max-messages N|--all] [--tail N] [--raw] [--no-fancy] [--no-index]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
+	log.Println("  fetch [--profile p]                  trigger Thunderbird/Betterbird to sync mail (headless)")
 	log.Println("  show --folder <name> --query <text> [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages matching substring (optionally whole thread)")
 	log.Println("  compose --to ...                     open/send via Thunderbird composer")
 }
@@ -535,8 +543,9 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 }
 
 func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) error {
-	if _, err := exec.LookPath("thunderbird"); err != nil {
-		return fmt.Errorf("thunderbird binary not found in PATH")
+	bin, err := findMailBinary()
+	if err != nil {
+		return err
 	}
 	var parts []string
 	parts = append(parts, fmt.Sprintf("to=%s", to))
@@ -554,7 +563,7 @@ func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) 
 	if sendNow {
 		args = append(args, "-send")
 	}
-	cmd := exec.Command("thunderbird", args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if !openComposer && sendNow {
@@ -611,6 +620,23 @@ func (a *App) loadProfiles() ([]Profile, error) {
 		profiles = append(profiles, mapToProfile(a.Root, current))
 	}
 	return profiles, nil
+}
+
+// fetch triggers a headless Thunderbird/Betterbird sync for the given profile.
+func (a *App) fetch(profileName string) error {
+	profile, err := a.resolveProfile(profileName)
+	if err != nil {
+		return err
+	}
+	bin, err := findMailBinary()
+	if err != nil {
+		return err
+	}
+	args := []string{"-headless", "-P", profile.Name, "-mail"}
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func mapToProfile(root string, kv map[string]string) Profile {
@@ -856,6 +882,21 @@ func accountForPath(path string, dirToAccount map[string]string) string {
 		}
 	}
 	return ""
+}
+
+func findMailBinary() (string, error) {
+	if env := strings.TrimSpace(os.Getenv("THUNDERBIRD_BIN")); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env, nil
+		}
+	}
+	candidates := []string{"betterbird", "thunderbird"}
+	for _, c := range candidates {
+		if path, err := exec.LookPath(c); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("neither betterbird nor thunderbird found in PATH")
 }
 
 func (a *App) buildFolderIndex(box Mailbox, accountLabel string, maxMessages int, tailCount int) (FolderIndex, error) {
