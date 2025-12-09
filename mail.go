@@ -132,6 +132,7 @@ func mailMain(args []string) {
 		allScan := cmd.Bool("all", false, "scan full folders (disable default cap)")
 		noIndex := cmd.Bool("no-index", false, "skip index cache, scan mbox directly")
 		tailCount := cmd.Int("tail", 0, "keep only last N messages per folder (0 = from start)")
+		fuzzy := cmd.Bool("fuzzy", false, "fuzzy token match (all tokens must appear)")
 		cmd.Parse(args[1:])
 		pos := cmd.Args()
 		if len(pos) < 1 {
@@ -175,7 +176,7 @@ func mailMain(args []string) {
 		if *allScan {
 			maxMsgs = 0
 		}
-		if err := app.search(pos[0], *profileName, *folderLike, acct, *limit, *rawGrep, *noFancy, sinceTime, tillTime, maxMsgs, *noIndex, *tailCount, false, false); err != nil {
+		if err := app.search(pos[0], *profileName, *folderLike, acct, *limit, *rawGrep, *noFancy, sinceTime, tillTime, maxMsgs, *noIndex, *tailCount, false, false, *fuzzy); err != nil {
 			log.Fatalf("search: %v", err)
 		}
 	case "compose":
@@ -198,6 +199,26 @@ func mailMain(args []string) {
 		}
 	case "help", "-h", "--help":
 		mailUsage()
+	case "show":
+		cmd := flag.NewFlagSet("show", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		folderLike := cmd.String("folder", "", "folder name/substring to search")
+		query := cmd.String("query", "", "substring match against subject/from/body")
+		limit := cmd.Int("limit", 1, "max messages to display")
+		account := cmd.String("account", "", "filter by account email")
+		accountShort := cmd.String("ac", "", "alias for --account")
+		thread := cmd.Bool("thread", false, "if set, show entire thread (same subject) after first match")
+		cmd.Parse(args[1:])
+		if *folderLike == "" || *query == "" {
+			log.Fatalf("show: --folder and --query are required")
+		}
+		acct := *account
+		if acct == "" {
+			acct = *accountShort
+		}
+		if err := app.showMail(*profileName, *folderLike, *query, acct, *limit, *thread); err != nil {
+			log.Fatalf("show: %v", err)
+		}
 	default:
 		mailUsage()
 	}
@@ -211,6 +232,7 @@ func mailUsage() {
 	log.Println("  recent <folder> [--query q]          show recent messages from a folder")
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--max-messages N|--all] [--tail N] [--raw] [--no-fancy] [--no-index]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
+	log.Println("  show --folder <name> --query <text> [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages matching substring (optionally whole thread)")
 	log.Println("  compose --to ...                     open/send via Thunderbird composer")
 }
 
@@ -295,7 +317,7 @@ func (a *App) recent(folder, profileName string, limit int, query string) error 
 	return nil
 }
 
-func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, useRaw, noFancy bool, since, till time.Time, maxMessages int, noIndex bool, tailCount int, includeTrash, includeSpam bool) error {
+func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, useRaw, noFancy bool, since, till time.Time, maxMessages int, noIndex bool, tailCount int, includeTrash, includeSpam bool, fuzzy bool) error {
 	_ = includeTrash
 	_ = includeSpam
 	profile, err := a.resolveProfile(profileName)
@@ -364,7 +386,7 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		}
 	}
 	changed := false
-	matcher := makeMatcher(query)
+	matcher := makeMatcher(query, fuzzy)
 	var hits []MailSummary
 	seenKeys := map[string]struct{}{}
 	for _, b := range filtered {
@@ -809,10 +831,21 @@ func readMailboxRecent(box Mailbox, limit int, query string) ([]MailSummary, err
 
 type matcherFunc func(string) bool
 
-func makeMatcher(q string) matcherFunc {
-	q = strings.ToLower(q)
+func makeMatcher(q string, fuzzy bool) matcherFunc {
+	if !fuzzy {
+		q = strings.ToLower(q)
+		return func(s string) bool {
+			return strings.Contains(s, q)
+		}
+	}
+	tokens := strings.Fields(strings.ToLower(q))
 	return func(s string) bool {
-		return strings.Contains(s, q)
+		for _, t := range tokens {
+			if !strings.Contains(s, t) {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -1029,6 +1062,130 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
+func (a *App) showMail(profileName, folderLike, query, accountEmail string, limit int, thread bool) error {
+	profile, err := a.resolveProfile(profileName)
+	if err != nil {
+		return err
+	}
+	accountEmail = strings.ToLower(strings.TrimSpace(accountEmail))
+	boxes, err := a.listMailboxes(profile)
+	if err != nil {
+		return err
+	}
+	var target Mailbox
+	found := false
+	for _, b := range boxes {
+		needle := strings.ToLower(folderLike)
+		if strings.Contains(strings.ToLower(b.Name), needle) || strings.Contains(strings.ToLower(filepath.Base(b.Name)), needle) {
+			target = b
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("no folders match %q", folderLike)
+	}
+
+	if accountEmail != "" {
+		idx, err := a.loadAccountDirIndex(profile)
+		if err != nil {
+			return fmt.Errorf("account index: %w", err)
+		}
+		dirs := idx[accountEmail]
+		ok := false
+		for _, d := range dirs {
+			if strings.HasPrefix(target.Path, d) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("folder %s not in account %s", target.Name, accountEmail)
+		}
+	}
+
+	queryLower := strings.ToLower(query)
+	f, err := os.Open(target.Path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	reader := mbox.NewReader(f)
+	count := 0
+	var threadSubject string
+	var threadMsgs []struct {
+		summary  MailSummary
+		bodyText string
+	}
+	for {
+		if limit > 0 && count >= limit {
+			break
+		}
+		msgReader, err := reader.NextMessage()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("warn: %s: %v", target.Name, err)
+			continue
+		}
+		summary, bodyText, err := parseMessageFull(msgReader, target.Name)
+		if err != nil {
+			continue
+		}
+		if accountEmail != "" {
+			summary.Account = accountEmail
+		}
+		blob := strings.ToLower(strings.Join([]string{summary.Subject, summary.From, bodyText}, " "))
+		normSub := normalizeSubject(summary.Subject)
+		if thread && threadSubject != "" {
+			if normSub == threadSubject {
+				threadMsgs = append(threadMsgs, struct {
+					summary  MailSummary
+					bodyText string
+				}{summary: summary, bodyText: bodyText})
+			}
+			continue
+		}
+		if !strings.Contains(blob, queryLower) {
+			continue
+		}
+		if thread {
+			threadSubject = normSub
+			threadMsgs = append(threadMsgs, struct {
+				summary  MailSummary
+				bodyText string
+			}{summary: summary, bodyText: bodyText})
+		} else {
+			count++
+			printFullMessage(summary, bodyText)
+			fmt.Println(strings.Repeat("-", 80))
+		}
+	}
+	if thread {
+		if len(threadMsgs) == 0 {
+			fmt.Println("No matches.")
+			return nil
+		}
+		sort.Slice(threadMsgs, func(i, j int) bool {
+			if threadMsgs[i].summary.When.IsZero() || threadMsgs[j].summary.When.IsZero() {
+				return threadMsgs[i].summary.Date > threadMsgs[j].summary.Date
+			}
+			return threadMsgs[i].summary.When.Before(threadMsgs[j].summary.When)
+		})
+		if limit > 0 && len(threadMsgs) > limit {
+			threadMsgs = threadMsgs[:limit]
+		}
+		for _, tm := range threadMsgs {
+			printFullMessage(tm.summary, tm.bodyText)
+			fmt.Println(strings.Repeat("-", 80))
+		}
+	} else if count == 0 {
+		fmt.Println("No matches.")
+	}
+	return nil
+}
+
 func parseMessage(r io.Reader, folderName string) (MailSummary, string, error) {
 	msg, err := mail.ReadMessage(io.LimitReader(r, maxMessageBytes))
 	if err != nil {
@@ -1062,6 +1219,38 @@ func parseMessage(r io.Reader, folderName string) (MailSummary, string, error) {
 		Snippet:   snippet,
 		When:      whenTime,
 	}, searchText, nil
+}
+
+func parseMessageFull(r io.Reader, folderName string) (MailSummary, string, error) {
+	msg, err := mail.ReadMessage(io.LimitReader(r, maxMessageBytes))
+	if err != nil {
+		return MailSummary{}, "", err
+	}
+	decode := new(mime.WordDecoder)
+	subject, _ := decode.DecodeHeader(msg.Header.Get("Subject"))
+	from, _ := decode.DecodeHeader(msg.Header.Get("From"))
+	dateHeader := msg.Header.Get("Date")
+	when := dateHeader
+	var whenTime time.Time
+	if t, ok := parseDateFlexible(dateHeader); ok {
+		when = t.In(time.Local).Format("2006-01-02 15:04")
+		whenTime = t
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(msg.Body, maxMessageBytes))
+	plain, alt := extractText(msg.Header, bodyBytes)
+	bodyText := plain
+	if bodyText == "" {
+		bodyText = alt
+	}
+	return MailSummary{
+		Folder:    folderName,
+		Subject:   strings.TrimSpace(subject),
+		From:      strings.TrimSpace(from),
+		Date:      when,
+		MessageID: msg.Header.Get("Message-Id"),
+		Snippet:   firstNonEmptyLine(bodyText),
+		When:      whenTime,
+	}, bodyText, nil
 }
 
 func parseDateFlexible(dateHeader string) (time.Time, bool) {
@@ -1114,6 +1303,37 @@ func hasMissingDates(msgs []MailSummary) bool {
 		}
 	}
 	return false
+}
+
+func normalizeSubject(sub string) string {
+	s := strings.ToLower(strings.TrimSpace(sub))
+	for {
+		switch {
+		case strings.HasPrefix(s, "re:"):
+			s = strings.TrimSpace(strings.TrimPrefix(s, "re:"))
+		case strings.HasPrefix(s, "fwd:"):
+			s = strings.TrimSpace(strings.TrimPrefix(s, "fwd:"))
+		case strings.HasPrefix(s, "fw:"):
+			s = strings.TrimSpace(strings.TrimPrefix(s, "fw:"))
+		default:
+			return s
+		}
+	}
+}
+
+func printFullMessage(m MailSummary, body string) {
+	fmt.Printf("From: %s\n", m.From)
+	fmt.Printf("Subject: %s\n", m.Subject)
+	fmt.Printf("Date: %s\n", m.Date)
+	if m.Account != "" {
+		fmt.Printf("Account: %s\n", m.Account)
+	}
+	fmt.Printf("Folder: %s\n", m.Folder)
+	if m.MessageID != "" {
+		fmt.Printf("Message-ID: %s\n", m.MessageID)
+	}
+	fmt.Println()
+	fmt.Println(body)
 }
 
 func firstNonEmptyLine(body string) string {

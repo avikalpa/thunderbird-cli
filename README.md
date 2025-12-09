@@ -18,9 +18,11 @@ go build -o bin/tb ./...
   - `--account/--ac` restricts to an account’s mailboxes (by identity email from prefs.js).  
   - `--max-messages` caps messages scanned per folder (0 = all; scans from start); `--all` disables any cap.
   - `--raw` uses ripgrep for fast text hits; `--no-fancy` gives plain lines (LLM-friendly).
+  - `--fuzzy` tokenizes the query and requires all tokens to be present (simple fuzzy AND).
   - `--no-index` forces live mbox scanning even if a cache exists.
 - `tb mail index [--profile p] [--folder f] [--account/--ac email]` — prebuild the search cache for faster repeated queries.
 - Shortcut: `tb search ...` is equivalent to `tb mail search ...`.
+- `tb mail show --folder <name> --query "<text>" [--account ...] [--limit N] [--thread]` — print full message(s); `--thread` shows all messages with the same subject in that folder.
 - `tb mail compose --to a@b --subject "Hi" --body "text" [--cc ...] [--send]` — launch Thunderbird composer (adds `-send` if you set `--send`).
 
 Notes:
