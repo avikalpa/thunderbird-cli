@@ -14,6 +14,7 @@
 - When searching “just arrived” mail without a timer, add `--refresh` (incremental); reserve `--full-rescan` for integrity checks or prune operations.
 - Expect the first refresh after upgrading to the incremental flow to run a full scan to seed fingerprints; subsequent refreshes will skip unchanged folders.
 - CLI shortcuts: `tb search "text"` (table, bold headers by default), `--raw` for LLM-friendly lines, `tb read --folder ... --query ...` to dump bodies, `tb send` as an alias for compose.
+- Release hygiene: do not publish binaries locally. Use GitHub Actions to build and attach release artifacts for all platforms/arches; keep local builds for testing only.
 - Skip folder args unless absolutely necessary; start wide, then add `--account` and dates to narrow noise (Spam/Junk included automatically).
 - If a search is unexpectedly empty, check whether Postgres is hydrated (`tb search` will auto-hydrate once) and consider `--refresh` after GUI fetch.
 

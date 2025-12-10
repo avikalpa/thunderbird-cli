@@ -1,0 +1,40 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build matrix
+        run: |
+          mkdir -p dist
+          matrix="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+          for target in $matrix; do
+            GOOS=${target%/*}
+            GOARCH=${target#*/}
+            ext=""
+            if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+            out="dist/tb-${GOOS}-${GOARCH}${ext}"
+            echo "building $out"
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -o "$out" ./...
+          done
+
+      - name: Upload assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
