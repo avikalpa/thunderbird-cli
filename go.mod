@@ -1,6 +1,8 @@
 module github.com/avikalpa/thunderbird-cli
 
-go 1.24.9
+go 1.24.0
+
+toolchain go1.24.9
 
 require (
 	github.com/emersion/go-mbox v1.0.4
