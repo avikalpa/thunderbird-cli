@@ -5,6 +5,7 @@ go 1.24.9
 require (
 	github.com/emersion/go-mbox v1.0.4
 	github.com/jackc/pgx/v5 v5.7.6
+	github.com/spf13/pflag v1.0.10
 )
 
 require (

@@ -34,6 +34,6 @@ func usage() {
 	log.Println("  tb mail profiles")
 	log.Println("  tb mail folders --profile default")
 	log.Println("  tb mail recent Inbox --limit 20")
-	log.Println("  tb mail search \"court order\" --folder Inbox --limit 10")
+	log.Println("  tb mail search \"court order\" --limit 10")
 	log.Println("  tb mail compose --to a@b --subject \"Update\" --body \"text\" --open")
 }

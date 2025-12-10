@@ -1,63 +1,63 @@
 # tb playbook
 
-Goal: quick, safe CLI access to Thunderbird mailboxes using `tb` (default profile root `~/.thunderbird` or `THUNDERBIRD_HOME`). All data access is read-only; the only write is an optional cache `.tb-index.json` under the profile.
+Practical drills for using `tb` with a Postgres cache (no direct mbox searches once hydrated).
 
-## Build
+## Prep
 ```sh
-cd ~/git/thunderbird-cli
+export TB_PG_DSN=postgres://user:pass@localhost/dbname
 go build -o bin/tb ./...
+tb mail profiles
 ```
 
-## Fast starts
-- List profiles: `tb mail profiles`
-- List folders: `tb mail folders --profile myprofile`
-- Recent in a folder: `tb mail recent Inbox --profile myprofile --limit 10 --query invoice`
+## Hydrate the cache
+- Full ingest with headless sync (full rescan):  
+  `tb mail fetch --profile base_config --sync --full-rescan`
+- Narrow to one account:  
+  `tb mail fetch --profile base_config --account user@example.com --sync`
+- Safety-first mirror (only if you want DB rows removed when missing on disk):  
+  `tb mail fetch --profile base_config --sync --prune --full-rescan`
 
-## Searching (parsed, table output)
-- Simple: `tb search "invoice" --profile myprofile --limit 20`
-- Account scoped: `tb search --profile myprofile --account user@example.com "tax"`
-- Date range: `tb search --profile myprofile --since 2024-01-01 --till 2024-12-31 "keyword"`
-- Tail bound (scan last N per folder): `tb search --profile myprofile --tail 5000 "keyword"`
-- Folder filter: `tb search --profile myprofile --folder ImapMail/mail.example.com/INBOX "keyword"`
-- Skip cache: `tb search --no-index "keyword"`
-- Plain/LLM output: add `--no-fancy`
-- Include Trash/Spam explicitly: add `--include-trash`/`--include-spam`
+## Core searches (Postgres-only)
+- Wide scan across all folders:  
+  `tb search "invoice" --profile base_config --limit 50`
+- Account scoped:  
+  `tb search "meeting" --profile base_config --account user@example.com --limit 100`
+- Date window:  
+  `tb search "contract" --profile base_config --since 2023-01-01 --till 2024-06-30`
+- Fuzzy tokens (all must appear):  
+  `tb search --profile base_config --fuzzy "payment confirmation"`
+- Force incremental refresh before search:  
+  `tb search "shipment" --profile base_config --refresh --limit 0`
+- Full rebuild before search (slow):  
+  `tb search "shipment" --profile base_config --full-rescan --limit 0`
 
-### Example timelines
-- Billing history across folders:  
-  `tb search --profile myprofile --limit 0 "bill"`
-- Specific provider inbox:  
-  `tb search --profile myprofile --folder ImapMail/mail.example.com/INBOX --limit 0 "provider name"`
-- Legal keyword window:  
-  `tb search --profile myprofile --since 2023-01-01 --till 2024-01-01 --limit 0 "court"`
+## Full-message inspection
+- First matching message:  
+  `tb mail show --profile base_config --folder ImapMail/example.com/INBOX --query "subject fragment" --limit 1`
+- Thread (same subject in folder):  
+  `tb mail show --profile base_config --folder ImapMail/example.com/INBOX --query "subject fragment" --limit 1 --thread`
 
-### Hard search drills (for robustness)
-- Account-scoped keyword:  
-  `tb search --profile myprofile --account user@example.com --limit 0 "keyword"`
-- All accounts keyword:  
-  `tb search --profile myprofile --limit 0 "keyword"`
-- Date-bounded common word:  
-  `tb search --profile myprofile --since 2023-01-01 --till 2024-01-01 "commonword" --limit 0`
+## Timeline drills (stress the index)
+- Common word, no cap:  
+  `tb search "receipt" --profile base_config --limit 0`
+- Account + date clamp:  
+  `tb search "statement" --profile base_config --account user@example.com --since 2022-01-01 --till 2025-01-01 --limit 0`
+- Broad “everything” sweep (expect many hits, tests ordering):  
+  `tb search "update" --profile base_config --limit 0`
 
-## Indexing (optional cache for speed)
-- Whole profile with defaults:  
-  `tb mail index --profile myprofile`
-- Account + folder focus:  
-  `tb mail index --profile myprofile --account user@example.com --folder INBOX --tail 8000`
-- Disable tail (full scan—may be slow): add `--tail 0`
-- Include trash/spam only if needed: add `--include-trash`/`--include-spam`
+## Background refresh pattern
+- Use systemd timer (see README) to run:  
+  `tb mail fetch --profile base_config --sync --prune --full-rescan`
+- For ad-hoc refreshes (manual):  
+  `tb mail fetch --profile base_config --sync` (incremental)
 
-Notes on indexing:
-- Cache file: `<profile>/.tb-index.json`. Delete it to drop the cache; use `--no-index` to bypass it temporarily.
-- Index uses file mtime/size to detect staleness. We never modify mbox/config data.
+## Compose (read-only guardrails)
+- Open composer for review:  
+  `tb mail compose --to a@b --subject "Check-in" --body "text"`
+- Send without opening (only when intentional):  
+  `tb mail compose --to a@b --subject "Send now" --body "text" --send`
 
-## Raw grep-like search (fast, no MIME parsing)
-- Fast text hits: `tb search --profile myprofile --raw "keyword" --limit 50`
-- Plain output: add `--no-fancy`
-
-## Safety
-- Read-only for mailboxes/config; sending uses Thunderbird itself.
-- Only write: `.tb-index.json` cache.
-- Folder filters are fuzzy but case-insensitive; use `tb mail folders` to copy exact names.
-## Test runner
-- `./tests/run.sh` builds, runs unit tests, and (optionally) small integration searches when a Thunderbird profile is available.
+## Safety reminders
+- Searches read Postgres only; `--refresh` or `tb mail fetch` are the only paths that touch mbox files.
+- Avoid `--prune` unless you need strict DB mirroring of what Thunderbird has on disk.
+- Prefer `--account` + date bounds when narrowing recent evidence.

@@ -1,30 +1,31 @@
 # Agent Notes
 
-- Mission: act on email evidence quickly without relying on the Thunderbird GUI unless absolutely necessary; use the CLI to list, search, and summarize mail so users open the GUI only for account management.
-- Safety: treat Thunderbird data as **read-only**. Do not edit/delete mbox files, `.msf`, `.sqlite`, or prefs. The only write the CLI performs is the optional cache `.tb-index.json` in a profile. Composing/sending goes through Thunderbird itself.
-- Profiles: use `tb mail profiles` to pick a profile; `tb mail folders --profile <name>` to discover folders. Prefer explicit `--profile` to avoid touching the wrong account.
-- Reading/searching: `tb mail recent <folder> [--limit N] [--query text]` for quick previews; `tb search "<query>" [--since/--ds] [--till/--dt] [--account/--ac email] [--max-messages] [--raw] [--no-fancy] [--no-index]` for deeper scans. Default output is a table with snippets; `--no-fancy` gives plain lines for machine consumption. `--raw` uses ripgrep for fast text hits.
-- Indexing/cache: `tb mail index ...` writes `.tb-index.json` for faster repeated searches. Delete it to drop the cache; add `--no-index` to bypass it temporarily. The cache auto-refreshes when stale or incomplete.
-- Postgres cache: set `TB_PG_DSN` to enable a Postgres-backed store (`tb_messages` table). Searches will prefer PG; scans/indexing upsert automatically. Override mail binary with `THUNDERBIRD_BIN` or `THUNDERBIRD_FLATPAK_ID` for flatpak.
-- Sending: `tb mail compose ...` opens Thunderbird’s composer. Only add `--send` when auto-send is desired; otherwise default to opening for review.
-- Workflow: keep commands reproducible, avoid actions that mutate profile data, and prefer explicit filters (profile/account/folder/date) when narrowing evidence.
+- **Mission:** act on email evidence quickly via CLI. Thunderbird/Betterbird remains the owner of profiles; `tb` only reads mbox data and writes to Postgres.
+- **Safety:** treat Thunderbird data as read-only. We never mutate mbox, `.msf`, SQLite, or prefs. Writes go to Postgres (`tb_messages`, `tb_meta`) and the legacy `.tb-index.json` only if `tb mail index` is used.
+- **Profiles:** `tb mail profiles` to choose; prefer explicit `--profile` when searching/fetching.
+- **Primary workflow:** hydrate Postgres with `tb mail fetch --profile <p> --sync` (optional `--account/--ac`, `--folder`; `--full` forces full rescan; `--prune` implies full). Searches run **only** against Postgres; `tb search ...` spans all folders by default, self-hydrates once if the cache is empty, and can be refreshed incrementally with `--refresh` (or fully with `--full-rescan`).
+- **Narrowing:** prefer `--account` and date bounds (`--since/--ds`, `--till/--dt`) instead of forcing folder names. Folder filter is optional and fuzzy.
+- **Reading full messages:** after a hit, use `tb mail show --folder <match> --query "<subject/body fragment>" [--limit N] [--thread]` to print bodies. Use table output for humans, `--no-fancy` for machines.
+- **Sync path:** `--sync` uses `THUNDERBIRD_BIN` if set, otherwise `betterbird`/`thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>` (default `eu.betterbird.Betterbird`). GUI remains the last resort for risky ops.
+- **Caching:** Postgres is the canonical cache. `--prune` deletes rows for the profile that were not seen in the current scan—leave it off unless strict mirroring is desired.
 
-## Operational tips (time-sensitive/search)
-- Always sync before hunting recent mail: `tb mail fetch --profile <p>` (uses `betterbird`/`thunderbird`/`flatpak run eu.betterbird.Betterbird`; override with `THUNDERBIRD_BIN` or `THUNDERBIRD_FLATPAK_ID`). If headless fetch fails, open Betterbird/Thunderbird GUI and click “Get Messages”.
-- Include all folders (Inbox + Junk/Spam/Trash) when searching recent alerts; use broad folder matches like `--folder example.com` or omit folder filter, then narrow if noisy.
-- Time-box searches for “just now” requests: add `--since YYYY-MM-DD` (today) or a narrow window; prefer fuzzy tokens (`--fuzzy "code sendername"`, or search for sender/subject fragments) instead of a single hard keyword.
-- After locating a candidate, dump the full body with `tb mail show --folder <path> --query "<subject fragment>" --limit 1 --thread` to extract details.
+## Operational tips
+- Run `tb mail fetch --sync` before time-sensitive hunts; automate with the systemd timer in README for hourly refreshes (incremental).
+- When searching “just arrived” mail without a timer, add `--refresh` (incremental); reserve `--full-rescan` for integrity checks or prune operations.
+- Expect the first refresh after upgrading to the incremental flow to run a full scan to seed fingerprints; subsequent refreshes will skip unchanged folders.
+- CLI shortcuts: `tb search "text"` (table, bold headers by default), `--raw` for LLM-friendly lines, `tb read --folder ... --query ...` to dump bodies, `tb send` as an alias for compose.
+- Skip folder args unless absolutely necessary; start wide, then add `--account` and dates to narrow noise (Spam/Junk included automatically).
+- If a search is unexpectedly empty, check whether Postgres is hydrated (`tb search` will auto-hydrate once) and consider `--refresh` after GUI fetch.
 
 ## TODOs
-- Add richer threading support (walk In-Reply-To/References, multi-folder threads).
-- Improve fuzzy search (token + regex) and expose saved searches.
-- Add message export (JSON/mbox slice) for downstream tools.
-- Harden date parsing with additional legacy formats and timezone edge cases.
-- Build optional attachment/text extraction helpers with size guards.
-- Add configurable fetch helper (env `THUNDERBIRD_BIN`) and detection of install paths.
+- Detect staleness via `tb_meta` and auto-refresh when last scan is older than a configurable window.
+- Incremental fetch (mtime/size checks) to avoid full rescans on large profiles.
+- Improve search relevance (Postgres tsvector/trigram) and optional JSON output.
+- Thread traversal via In-Reply-To/References across folders.
+- Attachment/text extraction helpers with size guards.
 
 ## Nice to have
-- Interactive TUI wrapper for browsing folders/results.
-- Configurable output themes (table widths, JSON output).
+- TUI browser for folders/results.
+- Saved searches and named filters.
 - Pluggable cache backends (SQLite) with integrity checks.
-- Optional parallel search scheduler for very large profiles.
+- Performance telemetry during fetch/search (counts, timings) saved to `tb_meta`.

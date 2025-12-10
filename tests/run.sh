@@ -26,7 +26,12 @@ if [ -f "$THB_HOME/profiles.ini" ]; then
     if [ -n "${profile:-}" ]; then
       echo "Using profile: $profile"
       "$BIN" mail folders --profile "$profile" | head -n 5 || true
-      "$BIN" search --profile "$profile" --limit 3 "test" || true
+      if [ -n "${TB_PG_DSN:-}" ]; then
+        "$BIN" mail fetch --profile "$profile" --max-messages 200 --tail 200 || true
+        "$BIN" search --profile "$profile" --limit 3 "test" || true
+      else
+        echo "TB_PG_DSN not set; skipping Postgres-backed fetch/search."
+      fi
     else
       echo "No profile rows found; skipping integration searches."
     fi

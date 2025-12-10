@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -23,10 +22,12 @@ import (
 	"time"
 
 	"github.com/emersion/go-mbox"
+	flag "github.com/spf13/pflag"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 	"regexp"
 	"text/tabwriter"
+	"unicode/utf8"
 )
 
 type App struct {
@@ -48,6 +49,7 @@ type Mailbox struct {
 }
 
 type MailSummary struct {
+	Profile   string
 	Folder    string
 	Subject   string
 	From      string
@@ -68,6 +70,20 @@ const (
 	defaultIndexTail   = 0        // 0 = full history; set --tail to bound indexing if desired
 )
 
+type ingestOptions struct {
+	accountEmail string
+	folderLike   string
+	syncFirst    bool
+	prune        bool
+	maxMessages  int
+	tailCount    int
+	fullRescan   bool
+}
+
+func fingerprintKey(profile string, path string) string {
+	return fmt.Sprintf("fp|%s|%s", profile, path)
+}
+
 func mailMain(args []string) {
 	if len(args) == 0 {
 		mailUsage()
@@ -81,6 +97,14 @@ func mailMain(args []string) {
 		if err := app.printProfiles(); err != nil {
 			log.Fatalf("profiles: %v", err)
 		}
+	case "read":
+		// Alias for show.
+		mailMain(append([]string{"show"}, args[1:]...))
+		return
+	case "send":
+		// Alias for compose.
+		mailMain(append([]string{"compose"}, args[1:]...))
+		return
 	case "index":
 		cmd := flag.NewFlagSet("index", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
@@ -121,24 +145,23 @@ func mailMain(args []string) {
 		profileName := cmd.String("profile", "", "profile name or path")
 		folderLike := cmd.String("folder", "", "restrict to folders containing this name")
 		limit := cmd.Int("limit", 25, "max results across folders")
-		rawGrep := cmd.Bool("raw", false, "use ripgrep for faster raw text search (no parsing/snippets)")
 		since := cmd.String("since", "", "only include messages on/after YYYY-MM-DD")
 		sinceShort := cmd.String("ds", "", "alias for --since")
 		till := cmd.String("till", "", "only include messages on/before YYYY-MM-DD")
 		tillShort := cmd.String("dt", "", "alias for --till")
-		maxScan := cmd.Int("max-messages", 0, "stop after scanning this many messages per folder (0 = all)")
 		account := cmd.String("account", "", "filter by account email")
 		accountShort := cmd.String("ac", "", "alias for --account")
-		noFancy := cmd.Bool("no-fancy", false, "plain output (no table)")
-		allScan := cmd.Bool("all", false, "scan full folders (disable default cap)")
-		noIndex := cmd.Bool("no-index", false, "skip index cache, scan mbox directly")
-		tailCount := cmd.Int("tail", 0, "keep only last N messages per folder (0 = from start)")
+		raw := cmd.Bool("raw", false, "plain output (no table; LLM-friendly)")
+		legacyNoFancy := cmd.Bool("no-fancy", false, "deprecated: use --raw")
+		refresh := cmd.Bool("refresh", false, "incremental refresh (ingest changed folders) before searching")
+		fullRescan := cmd.Bool("full-rescan", false, "force full rescan into Postgres before searching")
 		fuzzy := cmd.Bool("fuzzy", false, "fuzzy token match (all tokens must appear)")
 		cmd.Parse(args[1:])
 		pos := cmd.Args()
 		if len(pos) < 1 {
 			log.Fatalf("search: query required")
 		}
+		useRaw := *raw || *legacyNoFancy
 		var sinceTime time.Time
 		if *since != "" {
 			t, err := time.Parse("2006-01-02", *since)
@@ -173,11 +196,7 @@ func mailMain(args []string) {
 		if acct == "" {
 			acct = *accountShort
 		}
-		maxMsgs := *maxScan
-		if *allScan {
-			maxMsgs = 0
-		}
-		if err := app.search(pos[0], *profileName, *folderLike, acct, *limit, *rawGrep, *noFancy, sinceTime, tillTime, maxMsgs, *noIndex, *tailCount, false, false, *fuzzy); err != nil {
+		if err := app.search(pos[0], *profileName, *folderLike, acct, *limit, useRaw, sinceTime, tillTime, *refresh, *fullRescan, *fuzzy); err != nil {
 			log.Fatalf("search: %v", err)
 		}
 	case "compose":
@@ -201,8 +220,20 @@ func mailMain(args []string) {
 	case "fetch":
 		cmd := flag.NewFlagSet("fetch", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
+		folderLike := cmd.String("folder", "", "restrict to folders containing this name")
+		account := cmd.String("account", "", "filter by account email")
+		accountShort := cmd.String("ac", "", "alias for --account")
+		syncFirst := cmd.Bool("sync", false, "run Thunderbird/Betterbird headless sync before ingest")
+		prune := cmd.Bool("prune", false, "delete DB rows for this profile that are no longer present on disk")
+		fullRescan := cmd.Bool("full", false, "force full rescan instead of incremental ingest")
+		maxScan := cmd.Int("max-messages", 0, "optional cap per folder during ingest (0 = all)")
+		tailCount := cmd.Int("tail", 0, "keep only last N messages per folder during ingest (0 = all)")
 		cmd.Parse(args[1:])
-		if err := app.fetch(*profileName); err != nil {
+		acct := *account
+		if acct == "" {
+			acct = *accountShort
+		}
+		if err := app.fetch(*profileName, *folderLike, acct, *syncFirst, *prune, *fullRescan, *maxScan, *tailCount); err != nil {
 			log.Fatalf("fetch: %v", err)
 		}
 	case "help", "-h", "--help":
@@ -238,11 +269,11 @@ func mailUsage() {
 	log.Println("  profiles                             list Thunderbird profiles from profiles.ini")
 	log.Println("  folders [--profile name]             list mailboxes for a profile")
 	log.Println("  recent <folder> [--query q]          show recent messages from a folder")
-	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--max-messages N|--all] [--tail N] [--raw] [--no-fancy] [--no-index]")
+	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--folder name] [--refresh] [--full-rescan] [--raw] [--fuzzy]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
-	log.Println("  fetch [--profile p]                  trigger Thunderbird/Betterbird to sync mail (headless)")
-	log.Println("  show --folder <name> --query <text> [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages matching substring (optionally whole thread)")
-	log.Println("  compose --to ...                     open/send via Thunderbird composer")
+	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into Postgres cache")
+	log.Println("  show/read --folder <name> --query <text> [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages matching substring (optionally whole thread)")
+	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
 }
 
 func newApp() *App {
@@ -326,28 +357,97 @@ func (a *App) recent(folder, profileName string, limit int, query string) error 
 	return nil
 }
 
-func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, useRaw, noFancy bool, since, till time.Time, maxMessages int, noIndex bool, tailCount int, includeTrash, includeSpam bool, fuzzy bool) error {
-	_ = includeTrash
-	_ = includeSpam
+func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, raw bool, since, till time.Time, refresh bool, fullRescan bool, fuzzy bool) error {
+	_ = fuzzy // currently token AND matching in Postgres
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
 	}
 	accountEmail = strings.ToLower(strings.TrimSpace(accountEmail))
+	store, err := openPG()
+	if err != nil {
+		return fmt.Errorf("postgres required for search: %w", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if refresh && fullRescan {
+		log.Printf("info: full rescan requested for profile %s", profile.Name)
+	}
+
+	var needInitialIngest bool
+	if n, err := store.CountMessages(ctx, profile.Name); err == nil && n == 0 {
+		needInitialIngest = true
+		fullRescan = true
+	}
+
+	if refresh || needInitialIngest {
+		log.Printf("info: refreshing cache from profile %s", profile.Name)
+		if err := a.ingestProfile(ctx, store, profile, ingestOptions{
+			accountEmail: accountEmail,
+			folderLike:   folderLike,
+			syncFirst:    false,
+			prune:        fullRescan, // prune only makes sense on full rescan
+			fullRescan:   fullRescan,
+			maxMessages:  0,
+			tailCount:    0,
+		}); err != nil {
+			return fmt.Errorf("refresh: %w", err)
+		}
+	}
+
+	hits, err := store.Search(ctx, queryOptions{
+		query:      query,
+		account:    accountEmail,
+		folderLike: folderLike,
+		since:      since,
+		till:       till,
+		limit:      limit,
+		profile:    profile.Name,
+	})
+	if err != nil {
+		return err
+	}
+	if len(hits) == 0 {
+		fmt.Println("No matches.")
+		return nil
+	}
+	return printHits(hits, limit, raw)
+}
+
+func (a *App) ingestProfile(ctx context.Context, store *pgStore, profile Profile, opts ingestOptions) error {
+	accountEmail := strings.ToLower(strings.TrimSpace(opts.accountEmail))
+	if opts.syncFirst {
+		if err := a.syncProfile(profile); err != nil {
+			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+		}
+	}
+
 	boxes, err := a.listMailboxes(profile)
 	if err != nil {
 		return err
 	}
 
-	// Account filter -> reduce mailboxes to account directories.
+	fullRescan := opts.fullRescan
+	if opts.prune && !fullRescan {
+		fullRescan = true
+		log.Printf("info: enabling full rescan because --prune was requested")
+	}
+
+	fpCache := map[string]string{}
+	if !fullRescan {
+		if m, err := store.GetMetaPrefix(ctx, fmt.Sprintf("fp|%s|", profile.Name)); err == nil {
+			fpCache = m
+		}
+	}
+
 	dirToAccount := map[string]string{}
-	var accountDirs []string
 	if accountEmail != "" {
 		idx, err := a.loadAccountDirIndex(profile)
 		if err != nil {
 			return fmt.Errorf("account index: %w", err)
 		}
-		accountDirs = idx[accountEmail]
+		accountDirs := idx[accountEmail]
 		if len(accountDirs) == 0 {
 			return fmt.Errorf("account %s not found in prefs.js", accountEmail)
 		}
@@ -367,157 +467,88 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		if len(boxes) == 0 {
 			return fmt.Errorf("no folders for account %s", accountEmail)
 		}
+	} else {
+		// Build directory->account map for tagging.
+		if idx, err := a.loadAccountDirIndex(profile); err == nil {
+			for acct, dirs := range idx {
+				for _, d := range dirs {
+					dirToAccount[d] = acct
+				}
+			}
+		}
 	}
 
-	var filtered []Mailbox
+	if opts.folderLike != "" {
+		needle := strings.ToLower(opts.folderLike)
+		var filtered []Mailbox
+		for _, b := range boxes {
+			if strings.Contains(strings.ToLower(b.Name), needle) || strings.Contains(strings.ToLower(filepath.Base(b.Name)), needle) {
+				filtered = append(filtered, b)
+			}
+		}
+		if len(filtered) == 0 {
+			return fmt.Errorf("no folders match %q", opts.folderLike)
+		}
+		boxes = filtered
+	}
+
+	var keepIDs []string
 	for _, b := range boxes {
-		if folderLike == "" {
-			filtered = append(filtered, b)
+		fi, err := os.Stat(b.Path)
+		if err != nil {
+			log.Printf("warn: stat %s: %v", b.Name, err)
 			continue
 		}
-		needle := strings.ToLower(folderLike)
-		if strings.Contains(strings.ToLower(b.Name), needle) || strings.Contains(strings.ToLower(filepath.Base(b.Name)), needle) {
-			filtered = append(filtered, b)
+		fp := fmt.Sprintf("%d:%d", fi.ModTime().UnixNano(), fi.Size())
+		fpKey := fingerprintKey(profile.Name, b.Path)
+		if !fullRescan {
+			if prev, ok := fpCache[fpKey]; ok && prev == fp {
+				// Unchanged folder; skip ingest.
+				continue
+			}
 		}
-	}
-	if len(filtered) == 0 {
-		return fmt.Errorf("no folders match %q", folderLike)
-	}
-	if useRaw {
-		return rawSearch(query, filtered, limit, noFancy)
-	}
 
-	ctx := context.Background()
-	var store *pgStore
-	if os.Getenv("TB_PG_DSN") != "" {
-		if pg, err := openPG(); err == nil {
-			store = pg
-			defer pg.Close()
-		}
-	}
-	if store != nil {
-		if hits, err := store.Search(ctx, queryOptions{
-			query:      query,
-			account:    accountEmail,
-			folderLike: folderLike,
-			since:      since,
-			till:       till,
-			limit:      limit,
-		}); err == nil && len(hits) > 0 {
-			return printHits(hits, limit, noFancy)
-		}
-	}
-
-	var cache *IndexFile
-	if !noIndex {
-		cache, _ = loadIndex(indexPath(profile))
-		if cache == nil {
-			cache = &IndexFile{Folders: map[string]FolderIndex{}}
-		}
-	}
-	changed := false
-	matcher := makeMatcher(query, fuzzy)
-	var hits []MailSummary
-	seenKeys := map[string]struct{}{}
-	for _, b := range filtered {
 		targetAccount := accountEmail
 		if targetAccount == "" {
 			targetAccount = accountForPath(b.Path, dirToAccount)
 		}
-
-		var folderIdx *FolderIndex
-		useCache := false
-		if cache != nil && !noIndex {
-			if fi, err := os.Stat(b.Path); err == nil {
-				if entry, ok := cache.Folders[b.Path]; ok && entry.ModTime == fi.ModTime().Unix() && entry.Size == fi.Size() && entry.Complete && !hasMissingDates(entry.Messages) {
-					folderIdx = &entry
-					useCache = true
-				}
+		msgs, err := searchMailbox(b, func(string) bool { return true }, 0, time.Time{}, time.Time{}, opts.maxMessages, targetAccount, opts.tailCount)
+		if err != nil {
+			log.Printf("warn: ingest %s: %v", b.Name, err)
+			continue
+		}
+		decorateMessages(msgs, profile.Name, targetAccount)
+		if err := store.Upsert(ctx, msgs); err != nil {
+			return err
+		}
+		for _, m := range msgs {
+			if m.MessageID != "" {
+				keepIDs = append(keepIDs, m.MessageID)
 			}
 		}
-
-		filterMsgs := func(msgs []MailSummary) []MailSummary {
-			var out []MailSummary
-			for _, im := range msgs {
-				if im.Account == "" {
-					if targetAccount != "" {
-						im.Account = targetAccount
-					} else {
-						if acct := accountForPath(b.Path, dirToAccount); acct != "" {
-							im.Account = acct
-						}
-					}
-				}
-				if im.Search == "" {
-					im.Search = strings.ToLower(strings.Join([]string{im.Subject, im.From, im.Snippet}, " "))
-				}
-				if !since.IsZero() && !im.When.IsZero() && im.When.Before(since) {
-					continue
-				}
-				if !till.IsZero() && !im.When.IsZero() && im.When.After(till) {
-					continue
-				}
-				if accountEmail != "" && strings.ToLower(im.Account) != accountEmail {
-					continue
-				}
-				if matcher(im.Search) {
-					out = append(out, im)
-				}
-			}
-			return out
-		}
-
-		var more []MailSummary
-		if useCache && folderIdx != nil {
-			more = filterMsgs(folderIdx.Messages)
-		}
-
-		needRefresh := noIndex || !useCache || len(more) == 0 || (limit > 0 && len(more) < limit) || (folderIdx != nil && !folderIdx.Complete)
-		if needRefresh {
-			if noIndex {
-				live, err := searchMailbox(b, matcher, 0, since, till, maxMessages, targetAccount, tailCount)
-				if err != nil {
-					log.Printf("warn: search %s: %v", b.Name, err)
-				} else {
-					more = live
-				}
-			} else {
-				idxEntry, err := a.buildFolderIndex(b, targetAccount, maxMessages, tailCount)
-				if err != nil {
-					log.Printf("warn: index %s: %v", b.Name, err)
-				} else {
-					cache.Folders[b.Path] = idxEntry
-					folderIdx = &idxEntry
-					more = filterMsgs(idxEntry.Messages)
-					changed = true
-					if store != nil {
-						_ = store.Upsert(ctx, idxEntry.Messages)
-					}
-				}
-			}
-		}
-
-		for _, m := range more {
-			key := fmt.Sprintf("%s|%s|%s|%s", m.MessageID, m.Subject, m.Date, m.Folder)
-			if key == "|||" {
-				// Fallback key on missing metadata.
-				key = fmt.Sprintf("%s|%s", m.Date, m.Snippet)
-			}
-			if _, ok := seenKeys[key]; ok {
-				continue
-			}
-			seenKeys[key] = struct{}{}
-			hits = append(hits, m)
+		if err := store.SetMeta(ctx, fpKey, fp); err != nil {
+			log.Printf("warn: save fingerprint %s: %v", b.Name, err)
 		}
 	}
-	if len(hits) == 0 {
-		fmt.Println("No matches.")
-		return nil
+	if opts.prune && fullRescan {
+		if err := store.PruneMissing(ctx, profile.Name, keepIDs); err != nil {
+			return err
+		}
 	}
-	if cache != nil && changed {
-		_ = saveIndex(indexPath(profile), cache)
+	_ = store.SetMeta(ctx, fmt.Sprintf("last_scan.%s", profile.Name), time.Now().UTC().Format(time.RFC3339))
+	if fullRescan {
+		_ = store.SetMeta(ctx, fmt.Sprintf("last_full_scan.%s", profile.Name), time.Now().UTC().Format(time.RFC3339))
 	}
-	return printHits(hits, limit, noFancy)
+	return nil
+}
+
+func (a *App) syncProfile(profile Profile) error {
+	baseCmd := findMailCommand()
+	args := []string{"-headless", "-P", profile.Name, "-mail"}
+	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) error {
@@ -597,18 +628,28 @@ func (a *App) loadProfiles() ([]Profile, error) {
 	return profiles, nil
 }
 
-// fetch triggers a headless Thunderbird/Betterbird sync for the given profile.
-func (a *App) fetch(profileName string) error {
+// fetch ingests Thunderbird mailboxes into Postgres (optionally syncing first).
+func (a *App) fetch(profileName, folderLike, accountEmail string, syncFirst, prune, fullRescan bool, maxMessages, tailCount int) error {
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
 	}
-	baseCmd := findMailCommand()
-	args := []string{"-headless", "-P", profile.Name, "-mail"}
-	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	store, err := openPG()
+	if err != nil {
+		return fmt.Errorf("postgres required for fetch: %w", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	return a.ingestProfile(ctx, store, profile, ingestOptions{
+		accountEmail: strings.ToLower(strings.TrimSpace(accountEmail)),
+		folderLike:   folderLike,
+		syncFirst:    syncFirst,
+		prune:        prune,
+		fullRescan:   fullRescan,
+		maxMessages:  maxMessages,
+		tailCount:    tailCount,
+	})
 }
 
 func mapToProfile(root string, kv map[string]string) Profile {
@@ -870,7 +911,41 @@ func makeMatcher(q string, fuzzy bool) matcherFunc {
 	}
 }
 
-func printHits(hits []MailSummary, limit int, noFancy bool) error {
+func decorateMessages(msgs []MailSummary, profile string, account string) {
+	for i := range msgs {
+		msgs[i].Profile = profile
+		if msgs[i].Account == "" && account != "" {
+			msgs[i].Account = account
+		}
+		msgs[i].MessageID = cleanUTF8(msgs[i].MessageID)
+		msgs[i].Folder = cleanUTF8(msgs[i].Folder)
+		msgs[i].Date = cleanUTF8(msgs[i].Date)
+		msgs[i].Subject = cleanUTF8(msgs[i].Subject)
+		msgs[i].From = cleanUTF8(msgs[i].From)
+		msgs[i].Snippet = cleanUTF8(msgs[i].Snippet)
+		msgs[i].Search = cleanUTF8(msgs[i].Search)
+		if msgs[i].Search == "" {
+			msgs[i].Search = strings.ToLower(strings.Join([]string{msgs[i].Subject, msgs[i].From, msgs[i].Snippet}, " "))
+		}
+		msgs[i].Search = cleanUTF8(msgs[i].Search)
+	}
+}
+
+func cleanUTF8(s string) string {
+	if s == "" || utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if r == utf8.RuneError {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func printHits(hits []MailSummary, limit int, raw bool) error {
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].When.IsZero() && hits[j].When.IsZero() {
 			return hits[i].Date > hits[j].Date
@@ -887,7 +962,7 @@ func printHits(hits []MailSummary, limit int, noFancy bool) error {
 		hits = hits[:limit]
 	}
 
-	if noFancy {
+	if raw {
 		for _, h := range hits {
 			date := h.Date
 			if !h.When.IsZero() {
@@ -904,7 +979,8 @@ func printHits(hits []MailSummary, limit int, noFancy bool) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintf(w, "Date\tFolder\tFrom\tSubject\tSnippet\n")
+	fmt.Fprintf(w, "DATE\tFOLDER\tFROM\tSUBJECT\tSNIPPET\n")
+	fmt.Fprintf(w, "----\t------\t----\t-------\t-------\n")
 	for _, h := range hits {
 		date := h.Date
 		if !h.When.IsZero() {

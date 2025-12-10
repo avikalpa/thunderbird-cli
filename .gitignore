@@ -4,3 +4,6 @@ thunderbird-cli
 *.exe
 logs/
 dist/
+.env
+.env.*
+!.env.example
