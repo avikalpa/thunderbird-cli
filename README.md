@@ -4,7 +4,11 @@ Postgres-backed CLI for safely reading, searching, and composing mail using exis
 
 ## Requirements
 - Go 1.21+
-- Thunderbird/Betterbird profile under `~/.thunderbird` (override with `THUNDERBIRD_HOME`)
+- Thunderbird/Betterbird profile. Detection order:
+  - `THUNDERBIRD_HOME` if set
+  - `~/.thunderbird`
+  - `~/.var/app/eu.betterbird.Betterbird/.thunderbird`
+  - `~/.var/app/org.mozilla.Thunderbird/.thunderbird`
 - Postgres available via `TB_PG_DSN` (e.g. `postgres://user:pass@localhost/dbname`). Schema is created automatically (`tb_messages`, `tb_meta`).
 - Optional: place `TB_PG_DSN=...` in a local `.env` (ignored by git); see `.env.example` for the format.
 
@@ -62,8 +66,12 @@ Description=tb mail fetch (profile base_config)
 [Service]
 Type=oneshot
 Environment=TB_PG_DSN=postgres://user:pass@localhost/dbname
-Environment=THUNDERBIRD_HOME=%h/.thunderbird
 ExecStart=%h/git/thunderbird-cli/bin/tb mail fetch --profile base_config --sync --prune --full
+```
+
+If you want to pin a specific profile root explicitly, add:
+```
+Environment=THUNDERBIRD_HOME=%h/.var/app/eu.betterbird.Betterbird/.thunderbird
 ```
 
 `~/.config/systemd/user/tb-fetch.timer`:
@@ -97,7 +105,7 @@ systemctl --user enable --now tb-fetch.timer
 ```
 
 ## Paths & binaries
-- Thunderbird root: `~/.thunderbird` by default; override with `THUNDERBIRD_HOME`.
+- Thunderbird root auto-detects from common native and Flatpak locations; override with `THUNDERBIRD_HOME` to force a specific root.
 - Binary overrides: `THUNDERBIRD_BIN` (direct path), `THUNDERBIRD_FLATPAK_ID` (Flatpak ID; default `eu.betterbird.Betterbird`).
 - Preferred binary name/location: `bin/tb` (git-ignored).
 

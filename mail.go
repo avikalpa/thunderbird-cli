@@ -278,10 +278,32 @@ func mailUsage() {
 
 func newApp() *App {
 	root := os.Getenv("THUNDERBIRD_HOME")
-	if root == "" {
-		root = filepath.Join(os.Getenv("HOME"), ".thunderbird")
+	if strings.TrimSpace(root) != "" {
+		return &App{Root: root}
 	}
-	return &App{Root: root}
+	return &App{Root: detectThunderbirdRoot()}
+}
+
+func detectThunderbirdRoot() string {
+	home := os.Getenv("HOME")
+	candidates := []string{
+		filepath.Join(home, ".thunderbird"),
+		filepath.Join(home, ".var", "app", "eu.betterbird.Betterbird", ".thunderbird"),
+		filepath.Join(home, ".var", "app", "org.mozilla.Thunderbird", ".thunderbird"),
+	}
+
+	for _, root := range candidates {
+		if _, err := os.Stat(filepath.Join(root, "profiles.ini")); err == nil {
+			return root
+		}
+	}
+	for _, root := range candidates {
+		if st, err := os.Stat(root); err == nil && st.IsDir() {
+			return root
+		}
+	}
+
+	return candidates[0]
 }
 
 func indexPath(profile Profile) string {

@@ -3,7 +3,27 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${BIN:-"$ROOT/bin/tb"}"
-THB_HOME="${THUNDERBIRD_HOME:-"$HOME/.thunderbird"}"
+detect_thunderbird_home() {
+  if [ -n "${THUNDERBIRD_HOME:-}" ]; then
+    printf '%s\n' "$THUNDERBIRD_HOME"
+    return
+  fi
+
+  for candidate in \
+    "$HOME/.thunderbird" \
+    "$HOME/.var/app/eu.betterbird.Betterbird/.thunderbird" \
+    "$HOME/.var/app/org.mozilla.Thunderbird/.thunderbird"
+  do
+    if [ -f "$candidate/profiles.ini" ] || [ -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' "$HOME/.thunderbird"
+}
+
+THB_HOME="$(detect_thunderbird_home)"
 
 echo "== go test =="
 go test ./...
