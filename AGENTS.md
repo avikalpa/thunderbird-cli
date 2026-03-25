@@ -7,8 +7,16 @@
 - **Narrowing:** prefer `--account` and date bounds (`--since/--ds`, `--till/--dt`) instead of forcing folder names. Folder filter is optional and fuzzy.
 - **Reading full messages:** after a hit, use `tb mail show --folder <match> --query "<subject/body fragment>" [--limit N] [--thread]` to print bodies. Use table output for humans, `--no-fancy` for machines.
 - **Sync path:** `--sync` uses `THUNDERBIRD_BIN` if set, otherwise `betterbird`/`thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>` (default `eu.betterbird.Betterbird`). GUI remains the last resort for risky ops.
-- **Send path:** for headless sends, use `tb mail compose --profile <p> --send --open=false ...`. Google identities are handled directly from the Betterbird/Thunderbird profile: NSS-decrypt the stored refresh token, refresh an access token, send over SMTP XOAUTH2, then append to Sent over IMAP XOAUTH2. Unsupported providers still fall back to the isolated temp-profile + `Xvfb`/`xdotool` path because Thunderbird's command-line handler only guarantees compose-window creation.
+- **Send path:** for headless sends, use `tb mail compose --profile <p> --send --open=false ...`. Google, Microsoft, and Yahoo identities are handled directly from the Betterbird/Thunderbird profile: NSS-decrypt the stored refresh token, refresh an access token, send over SMTP XOAUTH2, then append to Sent over IMAP XOAUTH2. Unsupported providers still fall back to the isolated temp-profile + `Xvfb`/`xdotool` path because Thunderbird's command-line handler only guarantees compose-window creation.
 - **Caching:** Postgres is the canonical cache. `--prune` deletes rows for the profile that were not seen in the current scan—leave it off unless strict mirroring is desired.
+
+## README Section
+
+- Treat `README.md` as the operator manual, product pitch, and first demo of software quality.
+- Keep fast install and fast update instructions at the very top.
+- Prefer examples that look like real operator work, not toy one-liners.
+- When a feature materially improves user workflow, update `README.md` and `CHANGELOG.md` in the same change.
+- Treat `CHANGELOG.md` as the second marketing surface: write visible user wins, concrete commands, and behavior changes that matter in practice.
 
 ## Operational tips
 - Run `tb mail fetch --sync` before time-sensitive hunts; automate with the systemd timer in README for hourly refreshes (incremental).

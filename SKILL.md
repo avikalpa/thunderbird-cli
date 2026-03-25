@@ -18,6 +18,7 @@ Use this skill for local mail investigation through `/home/user/gh/thunderbird-c
 - Writes are limited to Postgres and the optional legacy JSON cache.
 - Prefer explicit `--profile` when more than one profile exists.
 - When sending mail, prefer `tb mail compose --send --open=false` over ad hoc SMTP. For supported providers, `tb` reuses the Betterbird profile's stored auth material and appends the exact message to Sent over IMAP; for unsupported providers it falls back to isolated Betterbird automation.
+- Direct provider-aware headless send currently supports Google, Microsoft, and Yahoo accounts already configured in the selected Thunderbird or Betterbird profile.
 
 ## Repository and build
 
@@ -66,7 +67,7 @@ If Betterbird is installed by Flatpak, the usual root is `~/.var/app/eu.betterbi
 
 - `--sync` will use `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
 - `compose/send` accepts `--from` to choose the Thunderbird/Betterbird identity explicitly when multiple accounts exist.
-- `compose --send --open=false` now prefers a direct provider-aware path. Google identities are sent headlessly with stored Betterbird OAuth tokens plus SMTP/IMAP XOAUTH2, and the exact message is appended to the configured Sent folder.
+- `compose --send --open=false` now prefers a direct provider-aware path. Google, Microsoft, and Yahoo identities are sent headlessly with stored Betterbird OAuth tokens plus SMTP/IMAP XOAUTH2, and the exact message is appended to the configured Sent folder.
 - Thunderbird's CLI path still only handles `-compose`, not a true top-level `-send`; unsupported providers therefore fall back to an isolated temporary clone of the chosen profile plus `Xvfb`/`xdotool` automation.
 - For machine-readable output, prefer `--raw` where available.
 - If no mail has been fetched into Postgres yet, `tb search` can self-hydrate once.

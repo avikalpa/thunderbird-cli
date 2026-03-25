@@ -13,6 +13,16 @@ func TestSentMailboxName(t *testing.T) {
 	if got != "[Gmail]/Sent Mail" {
 		t.Fatalf("sentMailboxName() = %q, want %q", got, "[Gmail]/Sent Mail")
 	}
+
+	got = sentMailboxName("imap://avikalpa%40outlook.com@outlook.office365.com/Sent")
+	if got != "Sent" {
+		t.Fatalf("sentMailboxName() = %q, want %q", got, "Sent")
+	}
+
+	got = sentMailboxName("imap://avikalpa%40yahoo.com@imap.mail.yahoo.com/Sent")
+	if got != "Sent" {
+		t.Fatalf("sentMailboxName() = %q, want %q", got, "Sent")
+	}
 }
 
 func TestParsePrefsSupportsQuotedAndScalarValues(t *testing.T) {
@@ -44,5 +54,26 @@ user_pref("mail.server.server3.login_at_startup", true);
 	}
 	if prefs["mail.server.server3.login_at_startup"] != "true" {
 		t.Fatalf("bool pref mismatch: %q", prefs["mail.server.server3.login_at_startup"])
+	}
+}
+
+func TestDefaultPortByHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		host     string
+		incoming bool
+		want     int
+	}{
+		{"smtp.gmail.com", false, 465},
+		{"smtp.office365.com", false, 587},
+		{"smtp.mail.yahoo.com", false, 465},
+		{"outlook.office365.com", true, 993},
+		{"imap.mail.yahoo.com", true, 993},
+	}
+	for _, tt := range tests {
+		if got := defaultPort(tt.host, tt.incoming); got != tt.want {
+			t.Fatalf("defaultPort(%q, %v) = %d, want %d", tt.host, tt.incoming, got, tt.want)
+		}
 	}
 }

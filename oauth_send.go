@@ -27,11 +27,36 @@ import (
 var errDirectSendUnsupported = errors.New("direct headless send unsupported for this account")
 
 const (
-	googleOAuthIssuer       = "accounts.google.com"
-	googleTokenEndpoint     = "https://www.googleapis.com/oauth2/v3/token"
-	googleThunderbirdAppID  = "406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com"
-	googleThunderbirdSecret = "kSmqreRr0qwBWJgbf5Y-PjSU"
+	googleOAuthIssuer    = "accounts.google.com"
+	yahooOAuthIssuer     = "login.yahoo.com"
+	microsoftOAuthIssuer = "login.microsoftonline.com"
+	smtpTrySSLAlwaysTLS  = 3
+	smtpTrySSLStartTLS   = 2
+	smtpTrySSLNever      = 1
 )
+
+var providerConfigs = map[string]oauthProviderConfig{
+	googleOAuthIssuer: {
+		Name:          "Google",
+		Hostname:      "oauth://accounts.google.com",
+		ClientID:      "406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com",
+		ClientSecret:  "kSmqreRr0qwBWJgbf5Y-PjSU",
+		TokenEndpoint: "https://www.googleapis.com/oauth2/v3/token",
+	},
+	yahooOAuthIssuer: {
+		Name:          "Yahoo",
+		Hostname:      "oauth://login.yahoo.com",
+		ClientID:      "dj0yJmk9NUtCTWFMNVpTaVJmJmQ9WVdrOVJ6UjVTa2xJTXpRbWNHbzlNQS0tJnM9Y29uc3VtZXJzZWNyZXQmeD0yYw--",
+		ClientSecret:  "f2de6a30ae123cdbc258c15e0812799010d589cc",
+		TokenEndpoint: "https://api.login.yahoo.com/oauth2/get_token",
+	},
+	microsoftOAuthIssuer: {
+		Name:          "Microsoft",
+		Hostname:      "oauth://login.microsoftonline.com",
+		ClientID:      "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+		TokenEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+	},
+}
 
 type identityConfig struct {
 	ID         string
@@ -47,7 +72,9 @@ type serverConfig struct {
 	Port       int
 	Username   string
 	AuthMethod int
+	TrySSL     int
 	Issuer     string
+	Scope      string
 }
 
 type sendAccountConfig struct {
@@ -73,6 +100,7 @@ type googleTokenResponse struct {
 	AccessToken      string `json:"access_token"`
 	ExpiresIn        int    `json:"expires_in"`
 	TokenType        string `json:"token_type"`
+	RefreshToken     string `json:"refresh_token"`
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
 }
@@ -82,14 +110,22 @@ type xoauth2SASLClient struct {
 	Token    string
 }
 
+type oauthProviderConfig struct {
+	Name          string
+	Hostname      string
+	ClientID      string
+	ClientSecret  string
+	TokenEndpoint string
+}
+
 func (a *App) sendHeadlessly(profile Profile, to, cc, from, subject, body string) error {
 	account, err := resolveSendAccount(profile, from)
 	if err != nil {
 		return err
 	}
 	switch directSendProvider(account) {
-	case "google":
-		return sendGoogleMessage(account, to, cc, subject, body)
+	case "google", "yahoo", "microsoft":
+		return sendOAuthMessage(account, to, cc, subject, body)
 	default:
 		return fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
 	}
@@ -210,26 +246,38 @@ func buildServerConfig(prefs map[string]string, prefix, id string) serverConfig 
 		Port:       atoiDefault(prefs[fmt.Sprintf("%s.%s.port", prefix, id)], 0),
 		Username:   strings.TrimSpace(prefs[fmt.Sprintf("%s.%s.username", prefix, id)]),
 		AuthMethod: atoiDefault(prefs[fmt.Sprintf("%s.%s.authMethod", prefix, id)], 0),
+		TrySSL:     atoiDefault(prefs[fmt.Sprintf("%s.%s.try_ssl", prefix, id)], 0),
 		Issuer:     strings.TrimSpace(prefs[fmt.Sprintf("%s.%s.oauth2.issuer", prefix, id)]),
+		Scope:      strings.TrimSpace(prefs[fmt.Sprintf("%s.%s.oauth2.scope", prefix, id)]),
 	}
 }
 
 func directSendProvider(account sendAccountConfig) string {
-	if strings.EqualFold(account.Outgoing.Issuer, googleOAuthIssuer) ||
-		strings.EqualFold(account.Incoming.Issuer, googleOAuthIssuer) ||
-		strings.EqualFold(account.Outgoing.Hostname, "smtp.gmail.com") ||
-		strings.EqualFold(account.Incoming.Hostname, "imap.gmail.com") {
+	switch issuer := strings.ToLower(strings.TrimSpace(account.Outgoing.Issuer)); issuer {
+	case googleOAuthIssuer:
 		return "google"
+	case yahooOAuthIssuer:
+		return "yahoo"
+	case microsoftOAuthIssuer:
+		return "microsoft"
+	}
+	switch issuer := strings.ToLower(strings.TrimSpace(account.Incoming.Issuer)); issuer {
+	case googleOAuthIssuer:
+		return "google"
+	case yahooOAuthIssuer:
+		return "yahoo"
+	case microsoftOAuthIssuer:
+		return "microsoft"
 	}
 	return ""
 }
 
-func sendGoogleMessage(account sendAccountConfig, to, cc, subject, body string) error {
-	refreshToken, err := googleRefreshToken(account.Profile.AbsolutePath, account.Outgoing.Username)
+func sendOAuthMessage(account sendAccountConfig, to, cc, subject, body string) error {
+	refreshToken, err := oauthRefreshToken(account)
 	if err != nil {
 		return err
 	}
-	accessToken, err := googleAccessToken(refreshToken)
+	accessToken, err := refreshAccessToken(account, refreshToken)
 	if err != nil {
 		return err
 	}
@@ -246,30 +294,35 @@ func sendGoogleMessage(account sendAccountConfig, to, cc, subject, body string) 
 	return nil
 }
 
-func googleRefreshToken(profilePath, username string) (string, error) {
+func oauthRefreshToken(account sendAccountConfig) (string, error) {
+	provider, ok := oauthConfigForAccount(account)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
+	}
+	profilePath := account.Profile.AbsolutePath
 	store, err := loadLogins(profilePath)
 	if err != nil {
 		return "", err
 	}
-	want := strings.ToLower(strings.TrimSpace(username))
+	want := strings.ToLower(strings.TrimSpace(account.Outgoing.Username))
 	for _, login := range store.Logins {
-		if login.Hostname != "oauth://accounts.google.com" {
+		if login.Hostname != provider.Hostname {
 			continue
 		}
 		decodedUser, err := decryptNSSSecret(profilePath, login.EncryptedUsername)
 		if err != nil {
-			return "", fmt.Errorf("decrypt google username: %w", err)
+			return "", fmt.Errorf("decrypt %s OAuth username: %w", provider.Name, err)
 		}
 		if strings.ToLower(strings.TrimSpace(decodedUser)) != want {
 			continue
 		}
 		refresh, err := decryptNSSSecret(profilePath, login.EncryptedPassword)
 		if err != nil {
-			return "", fmt.Errorf("decrypt google refresh token for %s: %w", username, err)
+			return "", fmt.Errorf("decrypt %s refresh token for %s: %w", provider.Name, account.Outgoing.Username, err)
 		}
 		return strings.TrimSpace(refresh), nil
 	}
-	return "", fmt.Errorf("no Google OAuth token stored for %s", username)
+	return "", fmt.Errorf("no %s OAuth token stored for %s", provider.Name, account.Outgoing.Username)
 }
 
 func loadLogins(profilePath string) (loginStore, error) {
@@ -284,36 +337,64 @@ func loadLogins(profilePath string) (loginStore, error) {
 	return store, nil
 }
 
-func googleAccessToken(refreshToken string) (string, error) {
+func refreshAccessToken(account sendAccountConfig, refreshToken string) (string, error) {
+	provider, ok := oauthConfigForAccount(account)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
+	}
 	form := url.Values{
-		"client_id":     {googleThunderbirdAppID},
-		"client_secret": {googleThunderbirdSecret},
+		"client_id":     {provider.ClientID},
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 	}
-	resp, err := http.PostForm(googleTokenEndpoint, form)
+	if provider.ClientSecret != "" {
+		form.Set("client_secret", provider.ClientSecret)
+	}
+	if scope := oauthScopeForAccount(account); scope != "" {
+		form.Set("scope", scope)
+	}
+	resp, err := http.PostForm(provider.TokenEndpoint, form)
 	if err != nil {
-		return "", fmt.Errorf("refresh Google token: %w", err)
+		return "", fmt.Errorf("refresh %s token: %w", provider.Name, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read Google token response: %w", err)
+		return "", fmt.Errorf("read %s token response: %w", provider.Name, err)
 	}
 	var token googleTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil {
-		return "", fmt.Errorf("decode Google token response: %w", err)
+		return "", fmt.Errorf("decode %s token response: %w", provider.Name, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if token.Error != "" {
-			return "", fmt.Errorf("refresh Google token: %s: %s", token.Error, token.ErrorDescription)
+			return "", fmt.Errorf("refresh %s token: %s: %s", provider.Name, token.Error, token.ErrorDescription)
 		}
-		return "", fmt.Errorf("refresh Google token: %s", strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("refresh %s token: %s", provider.Name, strings.TrimSpace(string(body)))
 	}
 	if token.AccessToken == "" {
-		return "", fmt.Errorf("refresh Google token returned no access token")
+		return "", fmt.Errorf("refresh %s token returned no access token", provider.Name)
 	}
 	return token.AccessToken, nil
+}
+
+func oauthConfigForAccount(account sendAccountConfig) (oauthProviderConfig, bool) {
+	for _, issuer := range []string{account.Outgoing.Issuer, account.Incoming.Issuer} {
+		if cfg, ok := providerConfigs[strings.ToLower(strings.TrimSpace(issuer))]; ok {
+			return cfg, true
+		}
+	}
+	return oauthProviderConfig{}, false
+}
+
+func oauthScopeForAccount(account sendAccountConfig) string {
+	for _, scope := range []string{account.Outgoing.Scope, account.Incoming.Scope} {
+		scope = strings.TrimSpace(scope)
+		if scope != "" {
+			return scope
+		}
+	}
+	return ""
 }
 
 func buildOutgoingMessage(account sendAccountConfig, to, cc, subject, body string) ([]byte, []string, error) {
@@ -417,15 +498,9 @@ func normalizeBody(body string) string {
 
 func smtpSendXOAUTH2(account sendAccountConfig, accessToken string, rawMsg []byte, recipients []string) error {
 	addr := net.JoinHostPort(account.Outgoing.Hostname, strconv.Itoa(account.Outgoing.Port))
-	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: account.Outgoing.Hostname})
+	client, err := dialSMTP(account.Outgoing)
 	if err != nil {
 		return fmt.Errorf("connect SMTP %s: %w", addr, err)
-	}
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, account.Outgoing.Hostname)
-	if err != nil {
-		return fmt.Errorf("init SMTP client: %w", err)
 	}
 	defer client.Close()
 
@@ -458,6 +533,53 @@ func smtpSendXOAUTH2(account sendAccountConfig, accessToken string, rawMsg []byt
 		return fmt.Errorf("SMTP quit: %w", err)
 	}
 	return nil
+}
+
+func dialSMTP(server serverConfig) (*smtp.Client, error) {
+	addr := net.JoinHostPort(server.Hostname, strconv.Itoa(server.Port))
+	switch server.TrySSL {
+	case smtpTrySSLStartTLS:
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		client, err := smtp.NewClient(conn, server.Hostname)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			_ = client.Close()
+			return nil, fmt.Errorf("server does not advertise STARTTLS")
+		}
+		if err := client.StartTLS(&tls.Config{ServerName: server.Hostname}); err != nil {
+			_ = client.Close()
+			return nil, err
+		}
+		return client, nil
+	case smtpTrySSLNever:
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		client, err := smtp.NewClient(conn, server.Hostname)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return client, nil
+	default:
+		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: server.Hostname})
+		if err != nil {
+			return nil, err
+		}
+		client, err := smtp.NewClient(conn, server.Hostname)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return client, nil
+	}
 }
 
 func appendSentMessage(account sendAccountConfig, accessToken string, rawMsg []byte) error {
@@ -521,6 +643,14 @@ func defaultPort(host string, incoming bool) int {
 	case incoming && strings.Contains(host, "gmail.com"):
 		return 993
 	case !incoming && strings.Contains(host, "gmail.com"):
+		return 465
+	case incoming && strings.Contains(host, "office365.com"):
+		return 993
+	case !incoming && strings.Contains(host, "office365.com"):
+		return 587
+	case incoming && strings.Contains(host, "yahoo.com"):
+		return 993
+	case !incoming && strings.Contains(host, "yahoo.com"):
 		return 465
 	default:
 		if incoming {
