@@ -30,9 +30,14 @@ const (
 	googleOAuthIssuer    = "accounts.google.com"
 	yahooOAuthIssuer     = "login.yahoo.com"
 	microsoftOAuthIssuer = "login.microsoftonline.com"
+	authMethodPassword   = 3
+	authMethodEncrypted  = 4
 	smtpTrySSLAlwaysTLS  = 3
 	smtpTrySSLStartTLS   = 2
 	smtpTrySSLNever      = 1
+	socketTypeAlwaysTLS  = 3
+	socketTypeStartTLS   = 2
+	socketTypePlain      = 1
 )
 
 var providerConfigs = map[string]oauthProviderConfig{
@@ -73,6 +78,7 @@ type serverConfig struct {
 	Username   string
 	AuthMethod int
 	TrySSL     int
+	SocketType int
 	Issuer     string
 	Scope      string
 }
@@ -126,9 +132,11 @@ func (a *App) sendHeadlessly(profile Profile, to, cc, from, subject, body string
 	switch directSendProvider(account) {
 	case "google", "yahoo", "microsoft":
 		return sendOAuthMessage(account, to, cc, subject, body)
-	default:
-		return fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
 	}
+	if supportsPasswordDirectSend(account) {
+		return sendPasswordMessage(account, to, cc, subject, body)
+	}
+	return fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
 }
 
 func resolveSendAccount(profile Profile, from string) (sendAccountConfig, error) {
@@ -247,6 +255,7 @@ func buildServerConfig(prefs map[string]string, prefix, id string) serverConfig 
 		Username:   strings.TrimSpace(prefs[fmt.Sprintf("%s.%s.username", prefix, id)]),
 		AuthMethod: atoiDefault(prefs[fmt.Sprintf("%s.%s.authMethod", prefix, id)], 0),
 		TrySSL:     atoiDefault(prefs[fmt.Sprintf("%s.%s.try_ssl", prefix, id)], 0),
+		SocketType: atoiDefault(prefs[fmt.Sprintf("%s.%s.socketType", prefix, id)], 0),
 		Issuer:     strings.TrimSpace(prefs[fmt.Sprintf("%s.%s.oauth2.issuer", prefix, id)]),
 		Scope:      strings.TrimSpace(prefs[fmt.Sprintf("%s.%s.oauth2.scope", prefix, id)]),
 	}
@@ -270,6 +279,93 @@ func directSendProvider(account sendAccountConfig) string {
 		return "microsoft"
 	}
 	return ""
+}
+
+func supportsPasswordDirectSend(account sendAccountConfig) bool {
+	if directSendProvider(account) != "" || !nssDirectSendCompiled() {
+		return false
+	}
+	return supportsStoredPasswordAuth(account.Outgoing.AuthMethod)
+}
+
+func supportsStoredPasswordAuth(authMethod int) bool {
+	switch authMethod {
+	case 0, authMethodPassword, authMethodEncrypted:
+		return true
+	default:
+		return false
+	}
+}
+
+func sendPasswordMessage(account sendAccountConfig, to, cc, subject, body string) error {
+	rawMsg, recipients, err := buildOutgoingMessage(account, to, cc, subject, body)
+	if err != nil {
+		return err
+	}
+
+	smtpUser, smtpPassword, err := loadStoredLoginCredential(account.Profile.AbsolutePath, "smtp", account.Outgoing.Hostname, account.Outgoing.Username)
+	if err != nil {
+		return err
+	}
+	if err := smtpSendPassword(account, smtpUser, smtpPassword, rawMsg, recipients); err != nil {
+		return err
+	}
+
+	imapUser, imapPassword, err := loadStoredLoginCredential(account.Profile.AbsolutePath, "imap", account.Incoming.Hostname, account.Incoming.Username)
+	if err != nil {
+		return err
+	}
+	if err := appendSentMessagePassword(account, imapUser, imapPassword, rawMsg); err != nil {
+		return fmt.Errorf("message sent but failed to append to %q: %w", sentMailboxName(account.Identity.SentFolder), err)
+	}
+	return nil
+}
+
+func loadStoredLoginCredential(profilePath, scheme, host, wantUsername string) (string, string, error) {
+	store, err := loadLogins(profilePath)
+	if err != nil {
+		return "", "", err
+	}
+
+	wantHost := loginStoreHostname(scheme, host)
+	wantUser := strings.ToLower(strings.TrimSpace(wantUsername))
+	type candidate struct {
+		username string
+		password string
+	}
+	var hostMatches []candidate
+
+	for _, login := range store.Logins {
+		if !strings.EqualFold(strings.TrimSpace(login.Hostname), wantHost) {
+			continue
+		}
+		username, err := decryptNSSSecret(profilePath, login.EncryptedUsername)
+		if err != nil {
+			return "", "", fmt.Errorf("decrypt stored %s username for %s: %w", scheme, host, err)
+		}
+		password, err := decryptNSSSecret(profilePath, login.EncryptedPassword)
+		if err != nil {
+			return "", "", fmt.Errorf("decrypt stored %s password for %s: %w", scheme, host, err)
+		}
+		username = strings.TrimSpace(username)
+		password = strings.TrimSpace(password)
+		hostMatches = append(hostMatches, candidate{username: username, password: password})
+		if wantUser == "" || strings.EqualFold(username, wantUser) {
+			return username, password, nil
+		}
+	}
+
+	if len(hostMatches) == 1 {
+		return hostMatches[0].username, hostMatches[0].password, nil
+	}
+	if len(hostMatches) == 0 {
+		return "", "", fmt.Errorf("no stored %s credential for %s", scheme, host)
+	}
+	return "", "", fmt.Errorf("no stored %s credential for %s matches %s", scheme, host, wantUsername)
+}
+
+func loginStoreHostname(scheme, host string) string {
+	return fmt.Sprintf("%s://%s", strings.ToLower(strings.TrimSpace(scheme)), strings.ToLower(strings.TrimSpace(host)))
 }
 
 func sendOAuthMessage(account sendAccountConfig, to, cc, subject, body string) error {
@@ -535,6 +631,73 @@ func smtpSendXOAUTH2(account sendAccountConfig, accessToken string, rawMsg []byt
 	return nil
 }
 
+func smtpSendPassword(account sendAccountConfig, username, password string, rawMsg []byte, recipients []string) error {
+	addr := net.JoinHostPort(account.Outgoing.Hostname, strconv.Itoa(account.Outgoing.Port))
+	client, err := dialSMTP(account.Outgoing)
+	if err != nil {
+		return fmt.Errorf("connect SMTP %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	auth, err := passwordSMTPAuth(client, account.Outgoing, username, password)
+	if err != nil {
+		return err
+	}
+	if auth != nil {
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP auth for %s: %w", username, err)
+		}
+	}
+	if err := client.Mail(account.Identity.Email); err != nil {
+		return fmt.Errorf("SMTP MAIL FROM %s: %w", account.Identity.Email, err)
+	}
+	for _, rcpt := range recipients {
+		if err := client.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("SMTP RCPT TO %s: %w", rcpt, err)
+		}
+	}
+	wc, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("SMTP DATA: %w", err)
+	}
+	if _, err := wc.Write(rawMsg); err != nil {
+		_ = wc.Close()
+		return fmt.Errorf("SMTP write message: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("SMTP finalize message: %w", err)
+	}
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("SMTP quit: %w", err)
+	}
+	return nil
+}
+
+func passwordSMTPAuth(client *smtp.Client, server serverConfig, username, password string) (smtp.Auth, error) {
+	ok, ext := client.Extension("AUTH")
+	if !ok {
+		return nil, nil
+	}
+	mechanisms := strings.Fields(strings.ToUpper(ext))
+	switch {
+	case containsToken(mechanisms, "PLAIN"):
+		return smtp.PlainAuth("", username, password, server.Hostname), nil
+	case containsToken(mechanisms, "LOGIN"):
+		return &loginSMTPAuth{Username: username, Password: password}, nil
+	default:
+		return nil, fmt.Errorf("SMTP server %s advertises unsupported AUTH mechanisms: %s", server.Hostname, ext)
+	}
+}
+
+func containsToken(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == want {
+			return true
+		}
+	}
+	return false
+}
+
 func dialSMTP(server serverConfig) (*smtp.Client, error) {
 	addr := net.JoinHostPort(server.Hostname, strconv.Itoa(server.Port))
 	switch server.TrySSL {
@@ -592,9 +755,9 @@ func appendSentMessage(account sendAccountConfig, accessToken string, rawMsg []b
 		}
 	}
 
-	addr := net.JoinHostPort(account.Incoming.Hostname, strconv.Itoa(account.Incoming.Port))
-	imapClient, err := client.DialTLS(addr, &tls.Config{ServerName: account.Incoming.Hostname})
+	imapClient, err := dialIMAP(account.Incoming)
 	if err != nil {
+		addr := net.JoinHostPort(account.Incoming.Hostname, strconv.Itoa(account.Incoming.Port))
 		return fmt.Errorf("connect IMAP %s: %w", addr, err)
 	}
 	defer imapClient.Logout()
@@ -612,6 +775,51 @@ func appendSentMessage(account sendAccountConfig, accessToken string, rawMsg []b
 		return fmt.Errorf("append to %s: %w", mailbox, err)
 	}
 	return nil
+}
+
+func appendSentMessagePassword(account sendAccountConfig, username, password string, rawMsg []byte) error {
+	mailbox := sentMailboxName(account.Identity.SentFolder)
+	if mailbox == "" {
+		mailbox = "Sent"
+	}
+
+	imapClient, err := dialIMAP(account.Incoming)
+	if err != nil {
+		addr := net.JoinHostPort(account.Incoming.Hostname, strconv.Itoa(account.Incoming.Port))
+		return fmt.Errorf("connect IMAP %s: %w", addr, err)
+	}
+	defer imapClient.Logout()
+
+	if err := imapClient.Login(username, password); err != nil {
+		return fmt.Errorf("IMAP login for %s: %w", username, err)
+	}
+
+	var buf bytes.Buffer
+	buf.Write(rawMsg)
+	if err := imapClient.Append(mailbox, nil, time.Now(), &buf); err != nil {
+		return fmt.Errorf("append to %s: %w", mailbox, err)
+	}
+	return nil
+}
+
+func dialIMAP(server serverConfig) (*client.Client, error) {
+	addr := net.JoinHostPort(server.Hostname, strconv.Itoa(server.Port))
+	switch {
+	case server.SocketType == socketTypeStartTLS:
+		imapClient, err := client.Dial(addr)
+		if err != nil {
+			return nil, err
+		}
+		if err := imapClient.StartTLS(&tls.Config{ServerName: server.Hostname}); err != nil {
+			_ = imapClient.Logout()
+			return nil, err
+		}
+		return imapClient, nil
+	case server.SocketType == socketTypePlain:
+		return client.Dial(addr)
+	default:
+		return client.DialTLS(addr, &tls.Config{ServerName: server.Hostname})
+	}
 }
 
 func sentMailboxName(uri string) string {
@@ -688,6 +896,12 @@ type xoauth2SMTPAuth struct {
 	Token    string
 }
 
+type loginSMTPAuth struct {
+	Username string
+	Password string
+	step     int
+}
+
 func (a xoauth2SMTPAuth) Start(*smtp.ServerInfo) (string, []byte, error) {
 	return "XOAUTH2", []byte(fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", a.Username, a.Token)), nil
 }
@@ -700,4 +914,27 @@ func (a xoauth2SMTPAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 		return nil, sasl.ErrUnexpectedServerChallenge
 	}
 	return nil, fmt.Errorf("unexpected SMTP XOAUTH2 challenge: %s", strings.TrimSpace(string(fromServer)))
+}
+
+func (a *loginSMTPAuth) Start(*smtp.ServerInfo) (string, []byte, error) {
+	a.step = 0
+	return "LOGIN", nil, nil
+}
+
+func (a *loginSMTPAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if !more {
+		return nil, nil
+	}
+	prompt := strings.ToLower(strings.TrimSpace(string(fromServer)))
+	switch a.step {
+	case 0:
+		a.step++
+		if strings.Contains(prompt, "password") {
+			return []byte(a.Password), nil
+		}
+		return []byte(a.Username), nil
+	default:
+		a.step++
+		return []byte(a.Password), nil
+	}
 }

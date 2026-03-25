@@ -36,7 +36,7 @@ func nssDirectSendCompiled() bool {
 }
 
 func nssBuildDetail() string {
-	return "compiled with NSS-backed direct OAuth send"
+	return "compiled with NSS-backed secret decryption for direct send"
 }
 
 func decryptNSSSecret(profilePath, ciphertext string) (string, error) {

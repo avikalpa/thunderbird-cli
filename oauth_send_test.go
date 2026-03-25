@@ -23,6 +23,11 @@ func TestSentMailboxName(t *testing.T) {
 	if got != "Sent" {
 		t.Fatalf("sentMailboxName() = %q, want %q", got, "Sent")
 	}
+
+	got = sentMailboxName("imap://avikalpa%40gour.top@mail.gour.top/Sent%20Items")
+	if got != "Sent Items" {
+		t.Fatalf("sentMailboxName() = %q, want %q", got, "Sent Items")
+	}
 }
 
 func TestParsePrefsSupportsQuotedAndScalarValues(t *testing.T) {
@@ -33,6 +38,7 @@ func TestParsePrefsSupportsQuotedAndScalarValues(t *testing.T) {
 	err := os.WriteFile(path, []byte(`user_pref("mail.identity.id2.useremail", "avikalpakundu@gmail.com");
 user_pref("mail.smtpserver.smtp2.port", 465);
 user_pref("mail.smtpserver.smtp2.authMethod", 10);
+user_pref("mail.server.server3.socketType", 3);
 user_pref("mail.server.server3.login_at_startup", true);
 `), 0o644)
 	if err != nil {
@@ -52,8 +58,24 @@ user_pref("mail.server.server3.login_at_startup", true);
 	if prefs["mail.smtpserver.smtp2.authMethod"] != "10" {
 		t.Fatalf("authMethod pref mismatch: %q", prefs["mail.smtpserver.smtp2.authMethod"])
 	}
+	if prefs["mail.server.server3.socketType"] != "3" {
+		t.Fatalf("socketType pref mismatch: %q", prefs["mail.server.server3.socketType"])
+	}
 	if prefs["mail.server.server3.login_at_startup"] != "true" {
 		t.Fatalf("bool pref mismatch: %q", prefs["mail.server.server3.login_at_startup"])
+	}
+}
+
+func TestSupportsStoredPasswordAuth(t *testing.T) {
+	t.Parallel()
+
+	for _, authMethod := range []int{0, authMethodPassword, authMethodEncrypted} {
+		if !supportsStoredPasswordAuth(authMethod) {
+			t.Fatalf("supportsStoredPasswordAuth(%d) = false, want true", authMethod)
+		}
+	}
+	if supportsStoredPasswordAuth(10) {
+		t.Fatalf("supportsStoredPasswordAuth(10) = true, want false")
 	}
 }
 

@@ -63,7 +63,7 @@ The major design changes are deliberate:
 - PostgreSQL is still supported, but only when explicitly requested
 - `tb doctor`, `tb features`, and `tb update` are now first-class commands
 - release archives and the installer script are part of the product surface
-- runtime capability reporting is explicit, especially around direct OAuth send support
+- runtime capability reporting is explicit, especially around direct secret-backed send support
 
 That makes the tool easier to install, easier to carry to another machine, and easier to understand when a platform-specific edge case blocks a feature.
 
@@ -126,19 +126,27 @@ Normal writes go only to:
 
 ## Supported Send Paths
 
-Direct provider-aware headless send currently supports:
+Direct headless send currently supports:
 
 - Google / Gmail
 - Microsoft / Outlook / Hotmail / Office 365
 - Yahoo
+- standard SMTP/IMAP accounts that store encrypted username/password credentials in the Thunderbird or Betterbird profile
 
-When direct send is available, `tb mail compose --send --open=false` does this:
+For OAuth-backed providers, `tb mail compose --send --open=false` does this:
 
 1. resolves the matching identity from `prefs.js`
 2. decrypts the stored refresh token from the profile
 3. refreshes an access token
 4. submits the message over SMTP with `XOAUTH2`
 5. appends the exact RFC822 message to the real Sent folder over IMAP
+
+For stored-password accounts, `tb` does the same operator job without opening Betterbird:
+
+1. resolves the matching identity from `prefs.js`
+2. decrypts the stored SMTP and IMAP credentials from the profile with NSS
+3. submits the message over SMTP using the server's advertised password auth mechanism
+4. appends the exact RFC822 message to the real Sent folder over IMAP
 
 When direct send is not available on a machine or in a build, `tb` falls back to the isolated Betterbird/Thunderbird automation path.
 
@@ -154,13 +162,13 @@ tb doctor
 Linux:
 
 - release builds are intended to be the best-supported path
-- direct OAuth send depends on NSS runtime libraries being available
+- direct secret-backed send depends on NSS runtime libraries being available
 - `tb doctor` tells you whether the current binary and machine can do direct send
 
 macOS and Windows:
 
 - search, profile discovery, reading, and cache operations are the primary focus
-- portable release builds may not include direct OAuth send support yet
+- portable release builds may not include direct secret-backed send support yet
 - use `tb features` and `tb doctor` instead of guessing
 
 Windows:
@@ -174,7 +182,7 @@ Windows:
 - an existing Thunderbird or Betterbird profile
 - Linux or macOS for the `install.sh` fast path
 - Go 1.25+ if you are building from source
-- NSS runtime libraries on Linux when you want direct provider-aware send
+- NSS runtime libraries on Linux when you want direct secret-backed send
 
 ## First Five Minutes
 
@@ -398,7 +406,7 @@ sudo apt install libnss3 libnspr4
 
 ### Direct send is unavailable in this build
 
-That means this binary was built without NSS-backed direct OAuth support.
+That means this binary was built without NSS-backed secret decryption for direct send.
 
 Use one of these paths:
 

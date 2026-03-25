@@ -4,6 +4,19 @@ All notable user-visible changes to `thunderbird-cli` are recorded here.
 
 This file is the second product surface after the README. It should tell a serious operator what got faster, safer, or easier, and show the command that proves it.
 
+## [Unreleased]
+
+### Headless send
+
+- added direct headless send for non-OAuth SMTP/IMAP accounts whose encrypted passwords are already stored in the Thunderbird or Betterbird profile
+- `tb mail compose --send --open=false` no longer has to fall back to GUI automation for standard password-backed accounts like `mail.gour.top`
+- direct send still appends the exact RFC822 message to the real Sent folder after submission
+
+### Capability reporting and docs
+
+- `tb doctor`, `tb features`, README, SKILL, and playbook docs now describe secret-backed direct send more accurately instead of implying OAuth-only support
+- runtime guidance now makes the NSS dependency story clearer for both OAuth and stored-password accounts
+
 ## [3.0.0] - 2026-03-25
 
 `3.0.0` is the release where `tb` stopped requiring PostgreSQL for first-run usefulness and started acting like a real installable product instead of a promising local checkout.

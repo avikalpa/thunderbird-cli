@@ -86,6 +86,11 @@ Send headlessly:
 tb mail compose --profile default --from user@example.com --to a@b --subject "Send now" --body "text" --send --open=false
 ```
 
+This path now covers both:
+
+- OAuth-backed accounts such as Gmail, Outlook, and Yahoo
+- standard SMTP/IMAP accounts whose encrypted passwords are already stored in the Thunderbird or Betterbird profile
+
 ## Safety reminders
 
 - `tb doctor` is the first diagnostic command, not an afterthought.

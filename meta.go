@@ -36,7 +36,7 @@ func printVersion() {
 	fmt.Printf("thunderbird-cli %s\n", version)
 	fmt.Printf("commit: %s\n", commit)
 	fmt.Printf("go:     %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Printf("oauth:  %s\n", nssBuildDetail())
+	fmt.Printf("direct: %s\n", nssBuildDetail())
 	if builtAt != "" && builtAt != "unknown" {
 		fmt.Printf("built:  %s\n", builtAt)
 	}
@@ -48,12 +48,13 @@ func printFeatures() {
 	fmt.Printf("Default backend: %s\n", storeBackendSQLite)
 	fmt.Printf("Selected backend: %s\n", store)
 	fmt.Printf("SQLite path: %s\n", defaultSQLitePath())
-	fmt.Printf("Direct OAuth send build: %s\n", nssBuildDetail())
+	fmt.Printf("Direct secret-backed send build: %s\n", nssBuildDetail())
 	fmt.Println("Direct headless send providers:")
 	if nssDirectSendCompiled() {
 		fmt.Println("- Google / Gmail")
 		fmt.Println("- Microsoft / Outlook / Hotmail / Office 365")
 		fmt.Println("- Yahoo")
+		fmt.Println("- standard SMTP/IMAP accounts with stored encrypted passwords")
 	} else {
 		fmt.Println("- unavailable in this build")
 	}
@@ -122,7 +123,7 @@ func runDoctor() error {
 	}
 
 	if nssDirectSendCompiled() {
-		fmt.Println("Direct send providers: Google, Microsoft, Yahoo")
+		fmt.Println("Direct send providers: Google, Microsoft, Yahoo, stored-password SMTP/IMAP")
 	} else {
 		fmt.Println("Direct send providers: unavailable in this build; fallback automation only")
 	}

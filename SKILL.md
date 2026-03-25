@@ -85,7 +85,8 @@ Inspect the live environment:
 ## Operational notes
 
 - `--sync` uses `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
-- Google, Microsoft, and Yahoo identities can use the direct provider-aware send path when the current build includes it and the runtime supports it.
+- Google, Microsoft, and Yahoo identities can use the direct OAuth send path when the current build includes it and the runtime supports it.
+- Standard SMTP/IMAP accounts with stored encrypted passwords can also use the direct headless send path when NSS-backed secret decryption is available.
 - If direct send is unavailable, `tb` falls back to isolated Betterbird automation for unsupported cases.
 - For machine-readable output, prefer `--raw` where available.
 - SQLite is the default because it is the lowest-friction portable search backend.
