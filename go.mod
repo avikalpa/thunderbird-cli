@@ -5,7 +5,9 @@ go 1.24.0
 toolchain go1.24.9
 
 require (
+	github.com/emersion/go-imap v1.2.1
 	github.com/emersion/go-mbox v1.0.4
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/spf13/pflag v1.0.10
 )

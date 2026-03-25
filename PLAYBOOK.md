@@ -58,7 +58,8 @@ tb mail profiles
   `tb mail compose --profile base_config --to a@b --subject "Send now" --body "text" --send --open=false`
 - Choose a specific identity when multiple accounts exist:  
   `tb mail compose --profile base_config --from avikalpakundu@gmail.com --to a@b --subject "Send now" --body "text" --send --open=false`
-- Under the hood, this uses a temporary profile clone plus `Xvfb`/`xdotool`, because Thunderbird does not expose a reliable standalone CLI `-send` flag.
+- For Google identities, this is now fully headless: `tb` decrypts the profile's stored OAuth refresh token, refreshes an access token, sends over SMTP XOAUTH2, and appends the exact message to Sent over IMAP XOAUTH2.
+- Unsupported providers still fall back to a temporary profile clone plus `Xvfb`/`xdotool`, because Thunderbird does not expose a reliable standalone CLI `-send` flag.
 
 ## Safety reminders
 - Searches read Postgres only; `--refresh` or `tb mail fetch` are the only paths that touch mbox files.

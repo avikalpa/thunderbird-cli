@@ -46,7 +46,8 @@ go build -o bin/tb ./...
    tb mail compose --profile base_config --to a@b --subject "Send now" --body "text" --send --open=false
    tb mail compose --profile base_config --from avikalpakundu@gmail.com --to support@mentors.debian.net --subject "Support" --body "..." --send --open=false
    ```
-   - Thunderbird/Betterbird's command-line handler supports `-compose`, but not a real CLI `-send` path. `tb --send --open=false` therefore uses an isolated temporary clone of the selected profile plus a virtual X display (`Xvfb`) and `xdotool` to drive the compose window invisibly.
+   - For Google identities stored in the selected Betterbird/Thunderbird profile, `tb --send --open=false` now sends directly: it decrypts the profile's stored OAuth refresh token with NSS, refreshes a Google access token, submits via SMTP XOAUTH2, and appends the exact message to the configured Sent mailbox over IMAP XOAUTH2.
+   - Unsupported providers fall back to the older isolated temporary profile clone plus virtual X display (`Xvfb`) and `xdotool` automation, because Thunderbird/Betterbird's command-line handler still only guarantees `-compose`, not a real standalone CLI `-send`.
    - Prefer `--profile` whenever multiple profiles exist.
 
 ## Commands (summary)
@@ -55,7 +56,7 @@ go build -o bin/tb ./...
 - `tb mail fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]` — ingest mail into Postgres (incremental by default; add `--full` for a full rebuild, implied when `--prune` is set).
 - `tb search ...` — search Postgres cache.
 - `tb mail show/read --folder <name> --query "<text>" [--limit N] [--thread]` — print full message(s).
-- `tb mail compose/send [--profile p] [--from email] ...` — open/send via Thunderbird composer; `--send --open=false` uses isolated headless send.
+- `tb mail compose/send [--profile p] [--from email] ...` — open/send mail; `--send --open=false` prefers direct provider-aware headless send and falls back to isolated Betterbird automation when the provider is unsupported.
 - `tb mail index ...` — legacy JSON cache (Postgres is the primary store).
 
 Note: the first refresh after enabling the fingerprinted incremental flow may perform a full scan to seed fingerprints; subsequent `--refresh` runs skip unchanged folders.

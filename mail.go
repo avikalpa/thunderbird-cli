@@ -593,6 +593,13 @@ func (a *App) compose(profileName, to, cc, from, subject, body string, openCompo
 		return err
 	}
 	if !openComposer && sendNow {
+		err := a.sendHeadlessly(profile, to, cc, from, subject, body)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, errDirectSendUnsupported) {
+			return err
+		}
 		return runIsolatedHeadlessSend(baseCmd, profile, composeArg)
 	}
 	args := []string{"-compose", composeArg}
@@ -775,12 +782,23 @@ func parsePrefs(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	re := regexp.MustCompile(`user_pref\(\"([^\"]+)\",\s*\"(.*)\"\);`)
+	re := regexp.MustCompile(`^user_pref\("([^"]+)",\s*(.+)\);$`)
 	m := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
 		matches := re.FindStringSubmatch(line)
 		if len(matches) == 3 {
-			m[matches[1]] = matches[2]
+			value := strings.TrimSpace(matches[2])
+			if strings.HasPrefix(value, "\"") {
+				unquoted, err := strconv.Unquote(value)
+				if err == nil {
+					m[matches[1]] = unquoted
+					continue
+				}
+				m[matches[1]] = strings.Trim(value, "\"")
+				continue
+			}
+			m[matches[1]] = value
 		}
 	}
 	return m, nil
