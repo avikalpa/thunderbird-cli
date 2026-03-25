@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${BIN:-"$ROOT/bin/tb"}"
+STATE_ROOT="$(mktemp -d)"
+trap 'rm -rf "$STATE_ROOT"' EXIT
+export XDG_STATE_HOME="$STATE_ROOT"
+
 detect_thunderbird_home() {
   if [ -n "${THUNDERBIRD_HOME:-}" ]; then
     printf '%s\n' "$THUNDERBIRD_HOME"
@@ -34,6 +38,15 @@ go build -o "$BIN" ./...
 echo "== tb help =="
 $BIN help || true
 
+echo "== tb version =="
+$BIN version
+
+echo "== tb features =="
+$BIN features
+
+echo "== tb doctor =="
+$BIN doctor || true
+
 echo "== optional Thunderbird integration =="
 if [ -f "$THB_HOME/profiles.ini" ]; then
   set +e
@@ -46,11 +59,13 @@ if [ -f "$THB_HOME/profiles.ini" ]; then
     if [ -n "${profile:-}" ]; then
       echo "Using profile: $profile"
       "$BIN" mail folders --profile "$profile" | head -n 5 || true
+      "$BIN" mail fetch --profile "$profile" --max-messages 200 --tail 200 || true
+      "$BIN" search --profile "$profile" --limit 3 "test" || true
       if [ -n "${TB_PG_DSN:-}" ]; then
-        "$BIN" mail fetch --profile "$profile" --max-messages 200 --tail 200 || true
-        "$BIN" search --profile "$profile" --limit 3 "test" || true
+        TB_STORE=postgres "$BIN" mail fetch --profile "$profile" --max-messages 200 --tail 200 || true
+        TB_STORE=postgres "$BIN" search --profile "$profile" --limit 3 "test" || true
       else
-        echo "TB_PG_DSN not set; skipping Postgres-backed fetch/search."
+        echo "TB_PG_DSN not set; skipping optional PostgreSQL backend smoke test."
       fi
     else
       echo "No profile rows found; skipping integration searches."

@@ -2,91 +2,142 @@
 
 All notable user-visible changes to `thunderbird-cli` are recorded here.
 
-This file is not just a release ledger. It is the second place, after the README, where the project has to prove that it saves operator time in real situations.
+This file is the second product surface after the README. It should tell a serious operator what got faster, safer, or easier, and show the command that proves it.
+
+## [3.0.0] - 2026-03-25
+
+`3.0.0` is the release where `tb` stopped requiring PostgreSQL for first-run usefulness and started acting like a real installable product instead of a promising local checkout.
+
+### Headline changes
+
+- SQLite is now the default cache backend.
+- PostgreSQL is still supported, but only when explicitly selected.
+- `tb doctor`, `tb features`, `tb version`, and `tb update` are first-class commands.
+- release archives and `install.sh` now define the fast install/update path
+- runtime capability reporting now explains whether direct OAuth send is compiled in and whether the current machine can actually use it
+
+### Why this matters
+
+Before `3.0.0`, the first serious question from a new user was usually some variant of:
+
+- do I really need PostgreSQL just to search my own mail?
+- why does this binary behave differently on different machines?
+- how do I update this without rebuilding from source every time?
+
+After `3.0.0`, the answers are much cleaner:
+
+- no, SQLite is the default and works well for local mail operations
+- the binary tells you the truth with `tb doctor` and `tb features`
+- install and update are now designed as first-class operator commands
+
+### Examples that are better now
+
+Install and verify the machine in one short flow:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avikalpa/thunderbird-cli/main/install.sh | sh
+tb doctor
+```
+
+Refresh a profile and search without bringing PostgreSQL to the party:
+
+```bash
+tb mail fetch --profile default --sync
+tb search "invoice" --profile default --limit 20
+```
+
+Inspect what the current build can actually do before trusting send automation:
+
+```bash
+tb features
+tb doctor
+```
+
+Switch to PostgreSQL only when you actually want it:
+
+```bash
+export TB_STORE=postgres
+export TB_PG_DSN='postgres://user:pass@localhost/tb_cli?sslmode=disable'
+tb mail fetch --profile default --sync
+tb search "release" --profile default
+```
+
+### Search and storage changes
+
+- added a new SQLite cache backend using `FTS5`
+- moved backend selection behind a store interface so SQLite can be the default and PostgreSQL can stay optional
+- fixed the imported-profile account-directory issue by preferring usable profile-relative mail roots over stale absolute paths from another machine
+- PostgreSQL search now uses the indexed full-text path instead of chained substring matches
+
+### Runtime and release changes
+
+- added `tb doctor` for profile detection, backend checks, and runtime diagnostics
+- added `tb features` for a concise view of build/runtime capabilities
+- added `tb version` for release metadata
+- added `tb update` for GitHub-release-based upgrades on supported archive formats
+- added `install.sh` for curl-based install on Linux and macOS
+- release packaging now ships archives that include the binary plus license files and README
+
+### Direct-send reporting changes
+
+- direct OAuth send support is now reported explicitly by the binary instead of being implied
+- unsupported builds degrade honestly instead of pretending the feature should work everywhere
+- Linux release builds are intended to be the strongest path for direct provider-aware send
+- portable builds remain useful for search/read workflows even when direct send is unavailable
+
+### Documentation changes
+
+- rewrote `README.md` as the actual operator manual, product pitch, and distribution guide
+- moved fast install/update to the top of the README
+- added explicit guidance for coding-agent workflows, including Codex and Claude Code usage patterns
+- split repository licensing so code remains Apache-2.0 and Markdown docs are CC BY-SA 4.0
+
+### Breaking expectations worth noting
+
+- `TB_PG_DSN` is no longer required for normal use
+- the default cache location is now the SQLite state directory, not PostgreSQL
+- `tb update` is designed around release archives; Windows remains a manual-download path for now
 
 ## [0.2.0] - 2026-03-25
 
-This release turns `tb` from a strong local-mail search tool into a credible headless mail operator for the accounts people already keep in Betterbird or Thunderbird.
+This release turned `tb` from a strong local-mail search tool into a credible headless mail operator for the accounts people already keep in Betterbird or Thunderbird.
 
 ### Added
 
-- Direct provider-aware headless send for:
+- direct provider-aware headless send for:
   - Google / Gmail
   - Microsoft / Outlook / Hotmail / Office 365
   - Yahoo
-- Native NSS-backed secret decryption so `tb` can reuse the OAuth refresh tokens already stored in the Thunderbird or Betterbird profile.
-- Direct SMTP `XOAUTH2` send for supported providers.
-- Direct IMAP `XOAUTH2` append to the real server-side Sent folder after send.
-- Provider-aware SMTP transport handling:
+- native NSS-backed secret decryption so `tb` can reuse the OAuth refresh tokens already stored in the Thunderbird or Betterbird profile
+- direct SMTP `XOAUTH2` send for supported providers
+- direct IMAP `XOAUTH2` append to the real server-side Sent folder after send
+- provider-aware SMTP transport handling:
   - implicit TLS for Gmail and Yahoo
   - `STARTTLS` for Microsoft SMTP on port `587`
-- Tests for:
+- tests for:
   - scalar `prefs.js` parsing
   - Sent-folder URI parsing
   - provider-specific default port selection
 
-### Changed
-
-- `tb mail compose --send --open=false` now prefers a real provider-aware headless path before falling back to GUI automation.
-- `prefs.js` parsing is no longer limited to quoted strings; integer and boolean prefs are now understood too.
-- Documentation now treats the project as a product manual instead of a thin developer note.
-
-### Verified In Practice
+### Verified in practice
 
 These flows were exercised against live configured accounts on this machine:
 
-- Gmail direct headless send completed successfully.
-- Yahoo direct headless send completed successfully.
-- Outlook direct headless send completed successfully.
-- Yahoo self-send was verified on the live IMAP server in both `INBOX` and `Sent`.
-- Outlook self-send was verified on the live IMAP server in both `INBOX` and `Sent`.
-- Gmail was already used earlier in this work to send a real Mentors support mail headlessly.
+- Gmail direct headless send completed successfully
+- Yahoo direct headless send completed successfully
+- Outlook direct headless send completed successfully
+- Yahoo self-send was verified on the live IMAP server in both `INBOX` and `Sent`
+- Outlook self-send was verified on the live IMAP server in both `INBOX` and `Sent`
 
-### Real Operator Examples
-
-Search mail without reopening every mailbox file:
+### Example
 
 ```bash
-TB_PG_DSN=postgres://user:pass@localhost/dbname \
-  tb search "support@mentors.debian.net" --profile base_config --refresh --limit 50
-```
-
-Read the exact message instead of the search hit snippet:
-
-```bash
-tb mail show --profile base_config --folder INBOX --query "Mail delivery failed" --limit 1 --thread
-```
-
-Send headlessly from a Gmail identity already stored in Betterbird:
-
-```bash
-tb mail compose --profile base_config \
-  --from avikalpakundu@gmail.com \
-  --to support@mentors.debian.net \
-  --cc avikalpakundu@gmail.com \
-  --subject "Mentors account activation/reset issue for avi@gour.top" \
+tb mail compose \
+  --profile base_config \
+  --from user@gmail.com \
+  --to support@example.org \
+  --cc audit@example.org \
+  --subject "Support request" \
   --body "Hello" \
   --send --open=false
 ```
-
-Send headlessly from Outlook or Yahoo without opening the GUI:
-
-```bash
-tb mail compose --profile base_config --from avikalpa@outlook.com --to avikalpa@outlook.com --subject "outlook self-test" --body "headless send test" --send --open=false
-
-tb mail compose --profile base_config --from avikalpa@yahoo.com --to avikalpa@yahoo.com --subject "yahoo self-test" --body "headless send test" --send --open=false
-```
-
-### Why This Release Matters
-
-Before this release, `tb` could search mail well but still had to rely on Betterbird automation for most send workflows.
-
-After this release, the supported-provider path is materially stronger:
-
-- fewer moving parts
-- less GUI dependence
-- better behavior for coding agents
-- real Sent-folder append on the server
-- clearer failure modes when token refresh, SMTP auth, or IMAP append fail
-
-That makes `tb` more useful for the exact class of tasks that tend to happen during operations work: incident follow-up, support escalation, audit trails, and agent-driven mail handling.

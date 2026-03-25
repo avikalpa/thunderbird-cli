@@ -155,7 +155,7 @@ func mailMain(args []string) {
 		raw := cmd.Bool("raw", false, "plain output (no table; LLM-friendly)")
 		legacyNoFancy := cmd.Bool("no-fancy", false, "deprecated: use --raw")
 		refresh := cmd.Bool("refresh", false, "incremental refresh (ingest changed folders) before searching")
-		fullRescan := cmd.Bool("full-rescan", false, "force full rescan into Postgres before searching")
+		fullRescan := cmd.Bool("full-rescan", false, "force full rescan into the configured cache backend before searching")
 		fuzzy := cmd.Bool("fuzzy", false, "fuzzy token match (all tokens must appear)")
 		cmd.Parse(args[1:])
 		pos := cmd.Args()
@@ -274,7 +274,7 @@ func mailUsage() {
 	log.Println("  recent <folder> [--query q]          show recent messages from a folder")
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--folder name] [--refresh] [--full-rescan] [--raw] [--fuzzy]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
-	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into Postgres cache")
+	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
 	log.Println("  show/read --folder <name> --query <text> [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages matching substring (optionally whole thread)")
 	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
 }
@@ -383,15 +383,15 @@ func (a *App) recent(folder, profileName string, limit int, query string) error 
 }
 
 func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, raw bool, since, till time.Time, refresh bool, fullRescan bool, fuzzy bool) error {
-	_ = fuzzy // currently token AND matching in Postgres
+	_ = fuzzy // currently token AND matching in the configured cache backend
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
 	}
 	accountEmail = strings.ToLower(strings.TrimSpace(accountEmail))
-	store, err := openPG()
+	store, err := openStore()
 	if err != nil {
-		return fmt.Errorf("postgres required for search: %w", err)
+		return fmt.Errorf("open search store: %w", err)
 	}
 	defer store.Close()
 
@@ -440,7 +440,7 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 	return printHits(hits, limit, raw)
 }
 
-func (a *App) ingestProfile(ctx context.Context, store *pgStore, profile Profile, opts ingestOptions) error {
+func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Profile, opts ingestOptions) error {
 	accountEmail := strings.ToLower(strings.TrimSpace(opts.accountEmail))
 	if opts.syncFirst {
 		if err := a.syncProfile(profile); err != nil {
@@ -664,15 +664,15 @@ func (a *App) loadProfiles() ([]Profile, error) {
 	return profiles, nil
 }
 
-// fetch ingests Thunderbird mailboxes into Postgres (optionally syncing first).
+// fetch ingests Thunderbird mailboxes into the configured cache backend (optionally syncing first).
 func (a *App) fetch(profileName, folderLike, accountEmail string, syncFirst, prune, fullRescan bool, maxMessages, tailCount int) error {
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
 	}
-	store, err := openPG()
+	store, err := openStore()
 	if err != nil {
-		return fmt.Errorf("postgres required for fetch: %w", err)
+		return fmt.Errorf("open fetch store: %w", err)
 	}
 	defer store.Close()
 
@@ -751,12 +751,10 @@ func (a *App) loadAccountDirIndex(p Profile) (map[string][]string, error) {
 		server := prefs[fmt.Sprintf("mail.account.%s.server", acc)]
 		idents := splitCSV(prefs[fmt.Sprintf("mail.account.%s.identities", acc)])
 		dir := prefs[fmt.Sprintf("mail.server.%s.directory", server)]
-		if dir == "" {
-			dirRel := prefs[fmt.Sprintf("mail.server.%s.directory-rel", server)]
-			if strings.HasPrefix(dirRel, "[ProfD]") {
-				dir = filepath.Join(p.AbsolutePath, filepath.FromSlash(strings.TrimPrefix(dirRel, "[ProfD]")))
-			} else if dirRel != "" {
-				dir = filepath.Clean(dirRel)
+		dirRel := prefs[fmt.Sprintf("mail.server.%s.directory-rel", server)]
+		if relPath := resolveProfileRelativeDir(p.AbsolutePath, dirRel); relPath != "" {
+			if dir == "" || !pathUsableForProfile(dir, p.AbsolutePath) {
+				dir = relPath
 			}
 		}
 		if dir == "" {
@@ -775,6 +773,26 @@ func (a *App) loadAccountDirIndex(p Profile) (map[string][]string, error) {
 		emailDirs[k] = uniqueStrings(dirs)
 	}
 	return emailDirs, nil
+}
+
+func resolveProfileRelativeDir(profilePath, dirRel string) string {
+	if strings.HasPrefix(dirRel, "[ProfD]") {
+		return filepath.Join(profilePath, filepath.FromSlash(strings.TrimPrefix(dirRel, "[ProfD]")))
+	}
+	if dirRel != "" {
+		return filepath.Clean(dirRel)
+	}
+	return ""
+}
+
+func pathUsableForProfile(path, profilePath string) bool {
+	path = filepath.Clean(path)
+	profilePath = filepath.Clean(profilePath)
+	if strings.HasPrefix(path, profilePath+string(os.PathSeparator)) {
+		return true
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func parsePrefs(path string) (map[string]string, error) {

@@ -1,68 +1,95 @@
 # tb playbook
 
-Practical drills for using `tb` with a Postgres cache (no direct mbox searches once hydrated).
+Practical drills for using `tb` with the default SQLite cache, plus the optional PostgreSQL path when you explicitly need it.
 
 ## Prep
+
 ```sh
-export TB_PG_DSN=postgres://user:pass@localhost/dbname
 go build -o bin/tb ./...
+tb doctor
 tb mail profiles
 ```
 
-## Hydrate the cache
-- Full ingest with headless sync (full rescan):  
-  `tb mail fetch --profile base_config --sync --full-rescan`
-- Narrow to one account:  
-  `tb mail fetch --profile base_config --account user@example.com --sync`
-- Safety-first mirror (only if you want DB rows removed when missing on disk):  
-  `tb mail fetch --profile base_config --sync --prune --full-rescan`
+## Hydrate the default cache
 
-## Core searches (Postgres-only)
-- Wide scan across all folders:  
-  `tb search "invoice" --profile base_config --limit 50`
-- Account scoped:  
-  `tb search "meeting" --profile base_config --account user@example.com --limit 100`
-- Date window:  
-  `tb search "contract" --profile base_config --since 2023-01-01 --till 2024-06-30`
-- Fuzzy tokens (all must appear):  
-  `tb search --profile base_config --fuzzy "payment confirmation"`
-- Force incremental refresh before search:  
-  `tb search "shipment" --profile base_config --refresh --limit 0`
-- Full rebuild before search (slow):  
-  `tb search "shipment" --profile base_config --full-rescan --limit 0`
+Incremental refresh with sync:
+
+```sh
+tb mail fetch --profile default --sync
+```
+
+Narrow to one account:
+
+```sh
+tb mail fetch --profile default --account user@example.com --sync
+```
+
+Strict mirror rebuild:
+
+```sh
+tb mail fetch --profile default --sync --prune --full
+```
+
+## Core searches
+
+Wide scan across all folders:
+
+```sh
+tb search "invoice" --profile default --limit 50
+```
+
+Account scoped:
+
+```sh
+tb search "meeting" --profile default --account user@example.com --limit 100
+```
+
+Date window:
+
+```sh
+tb search "contract" --profile default --since 2023-01-01 --till 2024-06-30
+```
+
+Refresh before searching:
+
+```sh
+tb search "shipment" --profile default --refresh --limit 50
+```
 
 ## Full-message inspection
-- First matching message:  
-  `tb mail show --profile base_config --folder ImapMail/example.com/INBOX --query "subject fragment" --limit 1`
-- Thread (same subject in folder):  
-  `tb mail show --profile base_config --folder ImapMail/example.com/INBOX --query "subject fragment" --limit 1 --thread`
 
-## Timeline drills (stress the index)
-- Common word, no cap:  
-  `tb search "receipt" --profile base_config --limit 0`
-- Account + date clamp:  
-  `tb search "statement" --profile base_config --account user@example.com --since 2022-01-01 --till 2025-01-01 --limit 0`
-- Broad “everything” sweep (expect many hits, tests ordering):  
-  `tb search "update" --profile base_config --limit 0`
+```sh
+tb mail show --profile default --folder INBOX --query "subject fragment" --limit 1
+tb mail show --profile default --folder INBOX --query "subject fragment" --limit 1 --thread
+```
 
-## Background refresh pattern
-- Use systemd timer (see README) to run:  
-  `tb mail fetch --profile base_config --sync --prune --full-rescan`
-- For ad-hoc refreshes (manual):  
-  `tb mail fetch --profile base_config --sync` (incremental)
+## Optional PostgreSQL path
 
-## Compose (read-only guardrails)
-- Open composer for review:  
-  `tb mail compose --to a@b --subject "Check-in" --body "text"`
-- Send without opening (isolated headless send, explicit profile):  
-  `tb mail compose --profile base_config --to a@b --subject "Send now" --body "text" --send --open=false`
-- Choose a specific identity when multiple accounts exist:  
-  `tb mail compose --profile base_config --from avikalpakundu@gmail.com --to a@b --subject "Send now" --body "text" --send --open=false`
-- For Google, Microsoft, and Yahoo identities, this is now fully headless: `tb` decrypts the profile's stored OAuth refresh token, refreshes an access token, sends over SMTP XOAUTH2, and appends the exact message to Sent over IMAP XOAUTH2.
-- Unsupported providers still fall back to a temporary profile clone plus `Xvfb`/`xdotool`, because Thunderbird does not expose a reliable standalone CLI `-send` flag.
+```sh
+export TB_STORE=postgres
+export TB_PG_DSN='postgres://user:pass@localhost/tb_cli?sslmode=disable'
+tb mail fetch --profile default --sync
+tb search "invoice" --profile default --limit 50
+```
+
+## Compose and send
+
+Open composer for review:
+
+```sh
+tb mail compose --profile default --to a@b --subject "Check-in" --body "text"
+```
+
+Send headlessly:
+
+```sh
+tb mail compose --profile default --from user@example.com --to a@b --subject "Send now" --body "text" --send --open=false
+```
 
 ## Safety reminders
-- Searches read Postgres only; `--refresh` or `tb mail fetch` are the only paths that touch mbox files.
-- Avoid `--prune` unless you need strict DB mirroring of what Thunderbird has on disk.
-- Prefer `--account` + date bounds when narrowing recent evidence.
-- If a send target forwards mail onward, delivery status notifications may reflect downstream SPF failures even though Thunderbird successfully submitted the original message.
+
+- `tb doctor` is the first diagnostic command, not an afterthought.
+- Searches read the cache; `tb mail fetch` and `tb search --refresh` are the paths that touch mailboxes.
+- Avoid `--prune` unless you want strict cache mirroring.
+- Prefer `--account` and date bounds before forcing folder names.
+- Delivery status notifications may reflect downstream forwarding failures even when local submission succeeded.

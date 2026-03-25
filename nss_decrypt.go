@@ -1,3 +1,5 @@
+//go:build linux && cgo
+
 package main
 
 /*
@@ -28,6 +30,14 @@ import (
 )
 
 var nssMu sync.Mutex
+
+func nssDirectSendCompiled() bool {
+	return true
+}
+
+func nssBuildDetail() string {
+	return "compiled with NSS-backed direct OAuth send"
+}
 
 func decryptNSSSecret(profilePath, ciphertext string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(ciphertext)

@@ -1,6 +1,6 @@
 ---
 name: thunderbird-cli
-description: Use when you need to inspect Thunderbird or Betterbird mail data from the local machine, especially to list profiles, hydrate a Postgres mail index, search mail, read matching messages, or trigger a sync through the thunderbird-cli repository.
+description: Use when you need to inspect Thunderbird or Betterbird mail data from the local machine, especially to list profiles, hydrate the local cache, search mail, read matching messages, or trigger sync/send through the thunderbird-cli repository.
 ---
 
 # Thunderbird CLI
@@ -9,22 +9,41 @@ Use this skill for local mail investigation through `/home/user/gh/thunderbird-c
 
 ## What this tool does
 
-`tb` reads existing Thunderbird/Betterbird profiles, ingests mail metadata and bodies into Postgres, and searches the cached index. Thunderbird/Betterbird remains the source of truth.
+`tb` reads existing Thunderbird/Betterbird profiles, builds a fast local cache, searches that cache, reads matching messages from the real mail stores, and can send through configured identities when the current build/runtime support it.
 
 ## Safety rules
 
 - Treat Thunderbird/Betterbird profile data as read-only.
-- Do not modify mbox, `.msf`, SQLite, or prefs files.
-- Writes are limited to Postgres and the optional legacy JSON cache.
+- Do not modify mbox, `.msf`, Thunderbird SQLite files, or prefs files.
+- Writes are limited to the configured cache backend, temporary isolated send-profile clones, and the optional legacy JSON index.
 - Prefer explicit `--profile` when more than one profile exists.
-- When sending mail, prefer `tb mail compose --send --open=false` over ad hoc SMTP. For supported providers, `tb` reuses the Betterbird profile's stored auth material and appends the exact message to Sent over IMAP; for unsupported providers it falls back to isolated Betterbird automation.
-- Direct provider-aware headless send currently supports Google, Microsoft, and Yahoo accounts already configured in the selected Thunderbird or Betterbird profile.
+- Start on unfamiliar machines with `tb doctor`.
+- When sending mail, prefer `tb mail compose --send --open=false` over ad hoc SMTP.
+- Verify automated send in Sent/INBOX/Junk evidence, not SMTP success alone.
 
 ## Repository and build
 
 - Repo: `/home/user/gh/thunderbird-cli`
 - Build: `go build -o bin/tb ./...`
 - Smoke test: `./tests/run.sh`
+
+## Backend model
+
+Default backend:
+
+- SQLite
+- path under `~/.local/state/thunderbird-cli/...` unless overridden
+
+Optional backend:
+
+- PostgreSQL via `TB_STORE=postgres` and `TB_PG_DSN=...`
+
+Inspect the live environment:
+
+```sh
+/home/user/gh/thunderbird-cli/bin/tb doctor
+/home/user/gh/thunderbird-cli/bin/tb features
+```
 
 ## Profile detection
 
@@ -35,52 +54,46 @@ Use this skill for local mail investigation through `/home/user/gh/thunderbird-c
 3. `~/.var/app/eu.betterbird.Betterbird/.thunderbird`
 4. `~/.var/app/org.mozilla.Thunderbird/.thunderbird`
 
-If Betterbird is installed by Flatpak, the usual root is `~/.var/app/eu.betterbird.Betterbird/.thunderbird`.
-
 ## Common workflow
 
-1. List profiles:
+1. Inspect the machine:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb doctor
+   ```
+2. List profiles:
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb mail profiles
    ```
-2. Hydrate or refresh Postgres from a profile:
+3. Hydrate or refresh the default SQLite cache:
    ```sh
-   TB_PG_DSN=postgres://user:pass@localhost/dbname \
    /home/user/gh/thunderbird-cli/bin/tb mail fetch --profile <profile> --sync
    ```
-3. Search indexed mail:
+4. Search indexed mail:
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb search "keyword" --profile <profile> --limit 50
    ```
-4. Read matching messages:
+5. Read matching messages:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb mail show --folder <folder> --query "text" --limit 1 --thread
+   /home/user/gh/thunderbird-cli/bin/tb mail show --profile <profile> --folder INBOX --query "text" --limit 1 --thread
    ```
-5. Compose or send through `tb` when you need an auditable trail:
+6. Send through `tb` when you need an auditable trail:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb mail compose --to someone@example.org --subject "Subject" --body "Body"
-   /home/user/gh/thunderbird-cli/bin/tb mail compose --profile base_config --to someone@example.org --subject "Subject" --body "Body" --send --open=false
-   /home/user/gh/thunderbird-cli/bin/tb mail compose --profile base_config --from avikalpakundu@gmail.com --to someone@example.org --subject "Subject" --body "Body" --send --open=false
+   /home/user/gh/thunderbird-cli/bin/tb mail compose --profile <profile> --to someone@example.org --subject "Subject" --body "Body"
+   /home/user/gh/thunderbird-cli/bin/tb mail compose --profile <profile> --from someone@example.org --to recipient@example.org --subject "Subject" --body "Body" --send --open=false
    ```
 
 ## Operational notes
 
-- `--sync` will use `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
-- `compose/send` accepts `--from` to choose the Thunderbird/Betterbird identity explicitly when multiple accounts exist.
-- `compose --send --open=false` now prefers a direct provider-aware path. Google, Microsoft, and Yahoo identities are sent headlessly with stored Betterbird OAuth tokens plus SMTP/IMAP XOAUTH2, and the exact message is appended to the configured Sent folder.
-- Thunderbird's CLI path still only handles `-compose`, not a true top-level `-send`; unsupported providers therefore fall back to an isolated temporary clone of the chosen profile plus `Xvfb`/`xdotool` automation.
+- `--sync` uses `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
+- Google, Microsoft, and Yahoo identities can use the direct provider-aware send path when the current build includes it and the runtime supports it.
+- If direct send is unavailable, `tb` falls back to isolated Betterbird automation for unsupported cases.
 - For machine-readable output, prefer `--raw` where available.
-- If no mail has been fetched into Postgres yet, `tb search` can self-hydrate once.
-- If the profile exists but has no configured account data, `tb` can still list profiles but searches and folder reads will be empty.
-- After any automated send, verify the result in the live mailbox, not just SMTP success:
-  - check `Sent Items` in Betterbird when the message should be user-auditable
-  - check `INBOX` and `Junk Mail` for delivery status notifications such as `Mail delivery failed: returning message to sender`
-  - prefer direct IMAP verification over local offline cache when timing matters
-  - if the GUI Betterbird instance already holds the live profile open, a second headless sync on that same profile will fail with a profile-lock error; do not treat that as send failure
-  - local `.msf`/offline cache updates can lag behind a successful direct SMTP+IMAP send until the running GUI instance decides to sync that account
-  - forwarded support aliases can still bounce due to SPF at a downstream recipient even when the original submission succeeded; that is a recipient-side forwarding problem, not proof that the local send failed
+- SQLite is the default because it is the lowest-friction portable search backend.
+- Switch to PostgreSQL only when you actually need it.
 
-## When to read more
+## README contract
 
-- Read `README.md` for full CLI usage and systemd examples.
-- Read `AGENTS.md` for repo-specific operational guidance.
+- Keep install and update at the top of `README.md`.
+- Keep examples realistic enough that an operator can paste them.
+- Keep `README.md` and `CHANGELOG.md` aligned when behavior changes.
+- Remember that docs are user-facing product surface, not filler.

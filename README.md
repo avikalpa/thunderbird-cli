@@ -1,454 +1,444 @@
 # thunderbird-cli (`tb`)
 
-Terminal-first mail operations for existing Thunderbird and Betterbird profiles.
+Terminal-first operations for existing Thunderbird and Betterbird profiles.
 
-`tb` is built for people who already trust Thunderbird or Betterbird as the source of truth, but need something sharper for automation, search, audits, scripting, and coding agents. It indexes mail into Postgres for fast search, reads full messages without UI clicking, and can send mail headlessly through the credentials already stored in your profile.
+`tb` is for people who already trust Thunderbird or Betterbird as the source of truth, but need a sharper operator layer for search, audits, scripting, and coding agents. It reads the profile you already have, keeps a fast local cache, and can send mail headlessly through the identities already configured in the mail client.
 
-## Quick Install
+## Install In 20 Seconds
 
-Fastest install from GitHub:
-
-```bash
-go install github.com/avikalpa/thunderbird-cli@latest
-```
-
-Fastest update:
+Recommended on Linux and macOS:
 
 ```bash
-go install github.com/avikalpa/thunderbird-cli@latest
+curl -fsSL https://raw.githubusercontent.com/avikalpa/thunderbird-cli/main/install.sh | sh
+tb doctor
 ```
 
-Local checkout workflow:
+Fast update:
+
+```bash
+tb update
+tb update --check
+```
+
+If `tb doctor` reports missing NSS runtime libraries on Linux, install the usual runtime packages for your distribution. On Debian and Ubuntu that is typically:
+
+```bash
+sudo apt install libnss3 libnspr4
+```
+
+Manual/source install remains available when you want the local checkout workflow or a platform-specific build:
 
 ```bash
 git clone https://github.com/avikalpa/thunderbird-cli ~/gh/thunderbird-cli
 cd ~/gh/thunderbird-cli
 go build -o bin/tb ./...
+./bin/tb doctor
 ```
-
-Local checkout update:
-
-```bash
-cd ~/gh/thunderbird-cli
-git pull --ff-only
-go build -o bin/tb ./...
-```
-
-Sanity check:
-
-```bash
-tb mail profiles
-```
-
-Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Why This Exists
 
-Thunderbird and Betterbird are excellent interactive mail clients. They are not excellent operator CLIs.
+Thunderbird and Betterbird are strong interactive mail clients. They are not strong operator CLIs.
 
-The pain points are consistent:
+Common pain points:
 
-- finding evidence across years of mail is slow in the UI
-- repeating the same searches for support, operations, or compliance work is tedious
-- coding agents need structured commands, not GUI clicks
-- headless send is awkward even when the account is already configured in the mail client
-- scripting around local mail stores is fragile if every tool invents its own parser
+- repeated mail searches are slow and difficult to automate
+- evidence collection through the GUI does not compose well with scripts or coding agents
+- profile-stored credentials are trapped inside the client
+- headless send is awkward even when the account is already configured
+- local mail stores are too important to poke at with ad hoc one-off scripts
 
-`tb` solves that by staying inside the reality you already have:
+`tb` solves that without replacing Thunderbird or Betterbird:
 
-- your Thunderbird or Betterbird profile stays authoritative
-- your configured accounts stay configured there
-- `tb` only adds fast search, automation, and controlled headless send
+- Thunderbird or Betterbird remains the source of truth
+- your configured accounts stay where they are
+- `tb` adds indexing, search, read, sync, and controlled send on top
 
-## What `tb` Does Well
+## What Changed In 3.x
 
-- discovers Thunderbird and Betterbird profiles automatically
-- ingests mail into Postgres for fast repeated search
-- searches across all folders without rereading mbox files every time
-- reads full messages and threads from local mail stores
-- drives headless sync through Thunderbird or Betterbird when needed
-- sends mail headlessly through profile-stored auth material
-- appends sent mail to the real server-side Sent folder for auditability
-- gives coding agents a stable CLI instead of screen-driving the mail UI
+`3.x` is the release line where `tb` stopped assuming PostgreSQL for first-run usability.
 
-## Supported Headless Send Providers
+The major design changes are deliberate:
 
-Direct provider-aware headless send is currently implemented for:
+- SQLite is now the default cache backend
+- PostgreSQL is still supported, but only when explicitly requested
+- `tb doctor`, `tb features`, and `tb update` are now first-class commands
+- release archives and the installer script are part of the product surface
+- runtime capability reporting is explicit, especially around direct OAuth send support
+
+That makes the tool easier to install, easier to carry to another machine, and easier to understand when a platform-specific edge case blocks a feature.
+
+## Core Capabilities
+
+`tb` does five things well:
+
+1. discover Thunderbird and Betterbird profiles automatically
+2. ingest mail into a fast local cache for repeated search
+3. read matching messages and threads from local mail stores
+4. trigger sync through the configured mail client when needed
+5. send headlessly from profile-backed identities when the build and runtime support it
+
+## The Storage Model
+
+Thunderbird and Betterbird keep the mail. `tb` keeps the operator cache.
+
+Default cache backend:
+
+- SQLite
+- location: `~/.local/state/thunderbird-cli/...` unless overridden
+- good for local single-user operation
+- zero database service to install
+
+Optional cache backend:
+
+- PostgreSQL
+- enable only when you explicitly want it
+- useful when you already have PostgreSQL and want that operational model
+
+Future direction:
+
+- a Panorama-aware importer or adapter can be added later
+- `tb` does not depend on Thunderbird's in-progress internal database work today
+
+Choose PostgreSQL explicitly:
+
+```bash
+export TB_STORE=postgres
+export TB_PG_DSN='postgres://user:pass@localhost/tb_cli?sslmode=disable'
+```
+
+Override the SQLite path explicitly:
+
+```bash
+export TB_SQLITE_PATH="$HOME/.local/state/thunderbird-cli/custom/index-v1.db"
+```
+
+## The Runtime Model
+
+Profile data is treated as read-only.
+
+Normal writes go only to:
+
+- the configured cache backend
+- temporary isolated send-profile clones when GUI fallback send is required
+- the optional legacy `.tb-index.json` file only if you explicitly run `tb mail index`
+
+`tb` does not rewrite your live mbox files, `.msf` files, Thunderbird SQLite files, or `prefs.js` during normal search work.
+
+## Supported Send Paths
+
+Direct provider-aware headless send currently supports:
 
 - Google / Gmail
 - Microsoft / Outlook / Hotmail / Office 365
 - Yahoo
 
-For those providers, `tb mail compose --send --open=false` does this:
+When direct send is available, `tb mail compose --send --open=false` does this:
 
-1. resolves the exact Thunderbird or Betterbird identity from `prefs.js`
-2. decrypts the stored OAuth refresh token from `logins.json` via NSS
-3. refreshes an access token using the same built-in provider details Betterbird uses
-4. sends over SMTP with `XOAUTH2`
-5. appends the exact RFC822 message to the configured Sent folder over IMAP with `XOAUTH2`
+1. resolves the matching identity from `prefs.js`
+2. decrypts the stored refresh token from the profile
+3. refreshes an access token
+4. submits the message over SMTP with `XOAUTH2`
+5. appends the exact RFC822 message to the real Sent folder over IMAP
 
-Unsupported providers fall back to the older isolated-profile automation path based on `Xvfb` and `xdotool`.
+When direct send is not available on a machine or in a build, `tb` falls back to the isolated Betterbird/Thunderbird automation path.
 
-## Safety Model
+Inspect what the current binary can actually do:
 
-`tb` is designed to be useful under operator pressure without quietly taking ownership of your mail data.
+```bash
+tb features
+tb doctor
+```
 
-What it does not do:
+## Platform Notes
 
-- it does not rewrite your live Thunderbird or Betterbird profile
-- it does not mutate mbox, `.msf`, SQLite, or prefs files during normal search workflows
-- it does not invent a parallel account store
+Linux:
 
-What it does write:
+- release builds are intended to be the best-supported path
+- direct OAuth send depends on NSS runtime libraries being available
+- `tb doctor` tells you whether the current binary and machine can do direct send
 
-- Postgres cache tables: `tb_messages`, `tb_meta`
-- optional legacy local index if you explicitly use `tb mail index`
-- temporary isolated send-profile clones for unsupported-provider fallback sends
+macOS and Windows:
 
-That split matters. Thunderbird remains your mail client. `tb` is the operator layer on top.
+- search, profile discovery, reading, and cache operations are the primary focus
+- portable release builds may not include direct OAuth send support yet
+- use `tb features` and `tb doctor` instead of guessing
 
-## Who This Is For
+Windows:
 
-`tb` is for:
-
-- operators investigating incidents through email
-- developers who need to inspect local mail with scripts
-- people who trust Thunderbird or Betterbird but want a real CLI
-- coding-agent users who want mail tasks to be reproducible and inspectable
-- anyone who would rather query mail like a system than click through it like a filing cabinet
+- release archives are published
+- `tb update` is not wired for Windows yet
+- download a fresh release archive when updating there
 
 ## Requirements
 
-- Go 1.24+
-- Thunderbird or Betterbird profile
-- Postgres for indexed search
-- NSS runtime libraries available on the machine
+- an existing Thunderbird or Betterbird profile
+- Linux or macOS for the `install.sh` fast path
+- Go 1.25+ if you are building from source
+- NSS runtime libraries on Linux when you want direct provider-aware send
 
-Profile root detection order:
+## First Five Minutes
+
+List available profiles:
+
+```bash
+tb mail profiles
+```
+
+Hydrate the default cache from a profile:
+
+```bash
+tb mail fetch --profile default --sync
+```
+
+Search across the cached corpus:
+
+```bash
+tb search "invoice" --profile default --limit 20
+tb search "support@company.example" --profile default --since 2026-01-01 --limit 20
+```
+
+Read the actual matching message:
+
+```bash
+tb mail show --profile default --folder INBOX --query "invoice" --limit 1 --thread
+```
+
+## Operator Workflows
+
+### Search Without Reopening Every Mailbox File
+
+```bash
+tb mail fetch --profile default --sync
+tb search "payment received" --profile default --limit 50
+tb search "release train" --profile default --account ops@example.com --since 2026-01-01 --limit 50
+```
+
+### Refresh Before A Time-Sensitive Search
+
+```bash
+tb search --profile default --refresh --raw "Mail delivery failed"
+```
+
+### Full Rebuild When Integrity Matters More Than Speed
+
+```bash
+tb mail fetch --profile default --sync --prune --full
+tb search "audit trail" --profile default --limit 100
+```
+
+### Open A Compose Window For Review
+
+```bash
+tb mail compose \
+  --profile default \
+  --from ops@example.com \
+  --to support@example.org \
+  --subject "Status update" \
+  --body "Hello" \
+  --open
+```
+
+### Send Headlessly Through A Configured Identity
+
+```bash
+tb mail compose \
+  --profile default \
+  --from ops@example.com \
+  --to support@example.org \
+  --cc audit@example.org \
+  --subject "Status update" \
+  --body "Hello" \
+  --send --open=false
+```
+
+### Verify The Machine Before You Trust It
+
+```bash
+tb doctor
+tb features
+tb version
+```
+
+## Commands By Job
+
+Inspect the environment:
+
+```bash
+tb doctor
+tb features
+tb version
+```
+
+Find profiles:
+
+```bash
+tb mail profiles
+```
+
+List folders:
+
+```bash
+tb mail folders --profile default
+```
+
+Hydrate or refresh the cache:
+
+```bash
+tb mail fetch --profile default --sync
+tb mail fetch --profile default --account ops@example.com --folder INBOX
+tb mail fetch --profile default --sync --prune --full
+```
+
+Search:
+
+```bash
+tb search "security review" --profile default --limit 25
+tb search "security review" --profile default --account ops@example.com --since 2026-01-01 --till 2026-03-31 --limit 25
+tb search --profile default --refresh --raw "support escalation"
+```
+
+Read full messages:
+
+```bash
+tb mail show --profile default --folder INBOX --query "security review" --limit 1
+tb mail show --profile default --folder INBOX --query "security review" --limit 1 --thread
+```
+
+Send:
+
+```bash
+tb mail compose --profile default --to a@example.org --subject "Ping" --body "Hello"
+tb mail compose --profile default --from ops@example.com --to a@example.org --subject "Ping" --body "Hello" --send --open=false
+```
+
+## Configuration
+
+Most users need none of these on day one.
+
+Profile discovery order:
 
 1. `THUNDERBIRD_HOME`
 2. `~/.thunderbird`
 3. `~/.var/app/eu.betterbird.Betterbird/.thunderbird`
 4. `~/.var/app/org.mozilla.Thunderbird/.thunderbird`
 
-If you use Betterbird Flatpak, the usual profile root is:
+Relevant environment variables:
 
-```bash
-~/.var/app/eu.betterbird.Betterbird/.thunderbird
-```
+- `TB_STORE`: `sqlite` (default) or `postgres`
+- `TB_SQLITE_PATH`: explicit SQLite cache file path
+- `TB_PG_DSN`: PostgreSQL DSN when `TB_STORE=postgres`
+- `THUNDERBIRD_HOME`: explicit profile root override
+- `THUNDERBIRD_BIN`: explicit Thunderbird/Betterbird binary override
+- `THUNDERBIRD_FLATPAK_ID`: explicit Flatpak app id override
 
-Postgres DSN is read from `TB_PG_DSN`.
-You can keep it in a local `.env` file; `.env.example` shows the shape.
+## Coding-Agent Workflows
 
-## First Five Minutes
+`tb` is designed to be driven by agents because it is deterministic, local, and inspectable.
 
-Build or install `tb`, then:
-
-```bash
-tb mail profiles
-```
-
-If Postgres is available:
-
-```bash
-export TB_PG_DSN='postgres://user:pass@localhost/dbname'
-tb mail fetch --profile base_config --sync
-```
-
-Then search:
-
-```bash
-tb search "invoice" --profile base_config --limit 20
-tb search "mentors.debian.net" --profile base_config --account avi@gour.top --limit 20
-```
-
-Then inspect a message:
-
-```bash
-tb mail show --profile base_config --folder INBOX --query "Mentors" --limit 1 --thread
-```
-
-## Operator Quickstart
-
-### 1. Hydrate the cache
-
-```bash
-TB_PG_DSN=postgres://user:pass@localhost/dbname \
-  tb mail fetch --profile base_config --sync
-```
-
-Important behavior:
-
-- default ingest is incremental
-- `--full-rescan` forces a full rebuild
-- `--prune` removes DB rows not seen in the current scan and implies a full rebuild
-- `--account` and `--folder` can narrow the ingest scope
-
-### 2. Search without touching mailboxes again
-
-```bash
-tb search "payment received" --profile base_config --limit 50
-tb search "ghostty" --profile base_config --account avikalpakundu@gmail.com --since 2026-01-01 --limit 50
-tb search --profile base_config --refresh --raw "support@mentors.debian.net"
-```
-
-### 3. Read the full evidence, not just the hit line
-
-```bash
-tb mail show --profile base_config --folder INBOX --query "Mail delivery failed" --limit 1 --thread
-```
-
-### 4. Send headlessly when the account is already configured
-
-Open a compose window:
-
-```bash
-tb mail compose --profile base_config \
-  --from avikalpakundu@gmail.com \
-  --to support@mentors.debian.net \
-  --subject "Support request" \
-  --body "Hello" 
-```
-
-Send without opening the GUI:
-
-```bash
-tb mail compose --profile base_config \
-  --from avikalpakundu@gmail.com \
-  --to support@mentors.debian.net \
-  --cc avikalpakundu@gmail.com \
-  --subject "Mentors account activation/reset issue for avi@gour.top" \
-  --body "Hello" \
-  --send --open=false
-```
-
-Provider-specific examples:
-
-```bash
-tb mail compose --profile base_config \
-  --from avikalpakundu@gmail.com \
-  --to avikalpakundu@gmail.com \
-  --subject "gmail self-test" \
-  --body "headless send test" \
-  --send --open=false
-
-
-tb mail compose --profile base_config \
-  --from avikalpa@outlook.com \
-  --to avikalpa@outlook.com \
-  --subject "outlook self-test" \
-  --body "headless send test" \
-  --send --open=false
-
-
-tb mail compose --profile base_config \
-  --from avikalpa@yahoo.com \
-  --to avikalpa@yahoo.com \
-  --subject "yahoo self-test" \
-  --body "headless send test" \
-  --send --open=false
-```
-
-## Commands By Job
-
-### Discover profiles
-
-```bash
-tb mail profiles
-```
-
-### List folders
-
-```bash
-tb mail folders --profile base_config
-```
-
-### Ingest mail into Postgres
-
-```bash
-tb mail fetch --profile base_config --sync
-tb mail fetch --profile base_config --account avikalpakundu@gmail.com --sync
-tb mail fetch --profile base_config --folder INBOX --sync --max-messages 200
-```
-
-### Search the cache
-
-```bash
-tb search "invoice"
-tb search "shipment" --profile base_config --refresh
-tb search "contract" --profile base_config --since 2025-01-01 --till 2025-12-31
-```
-
-### Read a full message or thread
-
-```bash
-tb mail show --profile base_config --folder INBOX --query "subject fragment" --limit 1
-tb mail show --profile base_config --folder INBOX --query "subject fragment" --limit 1 --thread
-```
-
-### Compose or send
-
-```bash
-tb mail compose --to a@b --subject "Update" --body "text"
-tb mail send --profile base_config --from avikalpakundu@gmail.com --to a@b --subject "Update" --body "text" --send --open=false
-```
-
-## Use With Coding Agents
-
-This tool is explicitly useful for coding-agent workflows because it turns local mail operations into stable commands.
-
-### Example: Codex
-
-Prompt:
+Codex example:
 
 ```text
-Use ~/gh/thunderbird-cli to search my Betterbird profile for all Mentors-related mail since 2026-03-01, then show me the newest rejection or activation-related thread.
+Use tb on this machine to inspect Thunderbird mail. Run `tb doctor`, refresh profile `default`, then search for "support@mentors.debian.net" since 2026-01-01 and return the top 10 results in raw mode.
 ```
 
-Likely command flow:
-
-```bash
-export TB_PG_DSN='postgres://user:pass@localhost/dbname'
-~/gh/thunderbird-cli/bin/tb mail fetch --profile base_config --sync --account avi@gour.top
-~/gh/thunderbird-cli/bin/tb search "mentors.debian.net" --profile base_config --account avi@gour.top --since 2026-03-01 --limit 20
-~/gh/thunderbird-cli/bin/tb mail show --profile base_config --folder INBOX --query "Next step: Confirm your email address" --limit 1 --thread
-```
-
-### Example: Claude Code
-
-Prompt:
+Claude Code example:
 
 ```text
-Search the local Betterbird profile for delivery-status notifications or support replies related to support@mentors.debian.net, and use thunderbird-cli instead of trying to drive the GUI.
+Use thunderbird-cli from the local checkout. Verify capabilities with `tb features`, hydrate the cache for profile `default`, then show the first full message in INBOX matching "Mail delivery failed".
 ```
 
-Likely command flow:
+Practical rule for agents:
 
-```bash
-export TB_PG_DSN='postgres://user:pass@localhost/dbname'
-~/gh/thunderbird-cli/bin/tb search "support@mentors.debian.net" --profile base_config --refresh --limit 50
-~/gh/thunderbird-cli/bin/tb search "Mail delivery failed" --profile base_config --limit 20
-~/gh/thunderbird-cli/bin/tb mail show --profile base_config --folder INBOX --query "Mail delivery failed" --limit 1 --thread
-```
+- start with `tb doctor`
+- use `tb mail fetch --sync` before time-sensitive hunts
+- prefer `tb search --raw` when another tool needs stable parseable output
+- verify automated send through Sent/INBOX/Junk evidence, not SMTP success alone
 
-### Why agents benefit from `tb`
+## Systemd Example
 
-- search output is scriptable
-- `--raw` output is easy to feed back into an LLM loop
-- direct send avoids GUI flakiness for supported providers
-- profile discovery and identity selection are explicit
-- the operator can audit the same commands afterward
+For machines where mail search should stay warm, a user timer is enough.
 
-## Systemd Automation
-
-Hourly refresh service:
-
-`~/.config/systemd/user/tb-fetch.service`
+Service:
 
 ```ini
 [Unit]
-Description=tb mail fetch (profile base_config)
+Description=Refresh thunderbird-cli cache
 
 [Service]
 Type=oneshot
-Environment=TB_PG_DSN=postgres://user:pass@localhost/dbname
-ExecStart=%h/go/bin/tb mail fetch --profile base_config --sync
-```
-
-If you want to pin the profile root explicitly:
-
-```ini
-Environment=THUNDERBIRD_HOME=%h/.var/app/eu.betterbird.Betterbird/.thunderbird
+ExecStart=%h/.local/bin/tb mail fetch --profile default --sync
 ```
 
 Timer:
 
-`~/.config/systemd/user/tb-fetch.timer`
-
 ```ini
 [Unit]
-Description=Run tb mail fetch hourly
+Description=Refresh thunderbird-cli cache every 30 minutes
 
 [Timer]
-OnCalendar=hourly
-Persistent=true
+OnBootSec=2m
+OnUnitActiveSec=30m
+Unit=thunderbird-cli-refresh.service
 
 [Install]
 WantedBy=timers.target
 ```
 
-Enable it:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now tb-fetch.timer
-```
-
 ## Troubleshooting
 
-### `TB_PG_DSN not set`
+### `tb doctor` says NSS runtime is missing
 
-Search and fetch use Postgres.
-Set it explicitly:
+Install the runtime libraries for your distribution and rerun `tb doctor`.
+
+On Debian and Ubuntu:
 
 ```bash
-export TB_PG_DSN='postgres://user:pass@localhost/dbname'
+sudo apt install libnss3 libnspr4
 ```
 
-### Betterbird is already running, but headless sync fails
+### Direct send is unavailable in this build
 
-That is a profile-lock issue, not necessarily a mail failure.
-The live GUI instance owns the profile. Direct provider-aware send can still work even when a second sync attempt fails.
+That means this binary was built without NSS-backed direct OAuth support.
 
-### Mail sent successfully but local Betterbird cache does not show it yet
+Use one of these paths:
 
-That is normal when:
+- use the fallback send path
+- build from source on Linux with cgo enabled and NSS development/runtime libraries available
+- inspect the current build with `tb features`
 
-- the GUI instance has not synced that account yet
-- `.msf` files lag behind the live server state
-- you are relying on offline cache instead of direct IMAP verification
+### Search is empty on a profile that obviously has mail
 
-For supported providers, `tb` appends to the real Sent folder on the server as part of the send path.
-If that append fails, the command fails.
+Try the normal progression:
 
-### Unsupported provider send path
+```bash
+tb mail fetch --profile default --sync
+tb search --profile default --refresh --raw "your query"
+```
 
-If the provider is not yet implemented directly, `tb` falls back to an isolated Betterbird automation path. That keeps the live desktop safer, but it is slower and more fragile than the direct OAuth path.
+### I want PostgreSQL back
 
-## Design Notes
+You still can. It is just no longer required for first-run usability.
 
-`tb` chooses an intentionally conservative architecture.
+```bash
+export TB_STORE=postgres
+export TB_PG_DSN='postgres://user:pass@localhost/tb_cli?sslmode=disable'
+tb mail fetch --profile default --sync
+tb search "invoice" --profile default
+```
 
-- Thunderbird or Betterbird owns account setup
-- NSS continues to own secret storage and decryption format
-- Postgres owns indexed search
-- `tb` owns orchestration, search UX, and headless send glue
+## Development
 
-That means the tool is boring in the right places. It works with the mail client you already trust instead of replacing it with another half-mail-client.
-
-## Release Discipline
-
-- README is the product manual, the pitch, and the first proof that the software respects the reader's time.
-- CHANGELOG is the second marketing surface and should explain what materially improved for operators.
-- release notes should show visible user wins, not just internal refactors.
-
-Read [CHANGELOG.md](./CHANGELOG.md) before upgrading if you care about behavior changes.
-
-## Tests
+Run the local smoke suite:
 
 ```bash
 ./tests/run.sh
 ```
 
-For quick verification during development:
-
-```bash
-go test ./...
-go build -o bin/tb ./...
-```
+Local source builds are also how you should test capability differences that depend on the host machine, especially direct send and runtime library resolution.
 
 ## License
 
-Apache License 2.0.
+- code: Apache-2.0
+- Markdown documentation: CC BY-SA 4.0
 
-Copyright 2025 Avikalpa Kundu.
+See `LICENSE` and `LICENSE-CC-BY-SA-4.0`.

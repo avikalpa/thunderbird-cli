@@ -14,6 +14,7 @@ import (
 
 type pgStore struct {
 	pool *pgxpool.Pool
+	dsn  string
 }
 
 func openPG() (*pgStore, error) {
@@ -26,7 +27,7 @@ func openPG() (*pgStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &pgStore{pool: pool}
+	store := &pgStore{pool: pool, dsn: dsn}
 	if err := store.ensureSchema(ctx); err != nil {
 		pool.Close()
 		return nil, err
@@ -77,6 +78,13 @@ CREATE INDEX IF NOT EXISTS tb_messages_account_idx ON tb_messages (profile, acco
 
 func (s *pgStore) Close() {
 	s.pool.Close()
+}
+
+func (s *pgStore) Info() StoreInfo {
+	return StoreInfo{
+		Backend:  storeBackendPostgres,
+		Location: s.dsn,
+	}
 }
 
 func (s *pgStore) Upsert(ctx context.Context, msgs []MailSummary) error {
@@ -140,14 +148,13 @@ func (s *pgStore) Search(ctx context.Context, q queryOptions) ([]MailSummary, er
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
+	tsQueryRef := ""
 	if q.profile != "" {
 		where = append(where, fmt.Sprintf("profile = %s", arg(q.profile)))
 	}
 	if q.query != "" {
-		tokens := strings.Fields(strings.ToLower(q.query))
-		for _, t := range tokens {
-			where = append(where, fmt.Sprintf("search_text ILIKE '%%' || %s || '%%'", arg(t)))
-		}
+		tsQueryRef = arg(q.query)
+		where = append(where, fmt.Sprintf("to_tsvector('simple', coalesce(search_text,'')) @@ websearch_to_tsquery('simple', %s)", tsQueryRef))
 	}
 	if q.account != "" {
 		where = append(where, fmt.Sprintf("account = %s", arg(strings.ToLower(q.account))))
@@ -169,13 +176,17 @@ func (s *pgStore) Search(ctx context.Context, q queryOptions) ([]MailSummary, er
 	if q.limit > 0 {
 		limitClause = fmt.Sprintf("LIMIT %d", q.limit)
 	}
+	orderClause := "ORDER BY when_ts DESC NULLS LAST, date_str DESC"
+	if tsQueryRef != "" {
+		orderClause = fmt.Sprintf("ORDER BY ts_rank_cd(to_tsvector('simple', coalesce(search_text,'')), websearch_to_tsquery('simple', %s)) DESC, when_ts DESC NULLS LAST, date_str DESC", tsQueryRef)
+	}
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
 SELECT profile, message_id, folder, subject, sender, snippet, search_text, when_ts, date_str, account
 FROM tb_messages
 WHERE %s
-ORDER BY when_ts DESC NULLS LAST, date_str DESC
 %s
-`, clause, limitClause), args...)
+%s
+`, clause, orderClause, limitClause), args...)
 	if err != nil {
 		return nil, err
 	}
