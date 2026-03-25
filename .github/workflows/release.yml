@@ -151,6 +151,21 @@ jobs:
       - build-portable
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_input='${{ github.event.inputs.version || '' }}'
+          if [ -n "$version_input" ]; then
+            tag="${version_input#v}"
+          else
+            tag="${GITHUB_REF_NAME#v}"
+          fi
+          echo "VERSION=$tag" >> "$GITHUB_ENV"
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -164,11 +179,17 @@ jobs:
           cd dist
           sha256sum thunderbird-cli_* > SHA256SUMS.txt
 
+      - name: Generate curated release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/release-notes.sh "$VERSION" > dist/RELEASE_NOTES.md
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
           draft: false
           prerelease: false
