@@ -9,17 +9,19 @@ fi
 version="$1"
 version=${version#v}
 
-awk -v version="$version" '
+extract_section() {
+  section="$1"
+  awk -v section="$section" '
   BEGIN {
     in_section = 0
     found = 0
   }
-  $0 ~ "^## \\[" version "\\]" {
+  $0 ~ "^## \\[" section "\\]" {
     in_section = 1
     found = 1
   }
   in_section {
-    if (NR > 1 && $0 ~ /^## \[/ && $0 !~ "^## \\[" version "\\]") {
+    if (NR > 1 && $0 ~ /^## \[/ && $0 !~ "^## \\[" section "\\]") {
       exit
     }
     print
@@ -29,4 +31,11 @@ awk -v version="$version" '
       exit 2
     }
   }
-' CHANGELOG.md
+  ' CHANGELOG.md
+}
+
+if extract_section "$version"; then
+  exit 0
+fi
+
+extract_section "Unreleased"

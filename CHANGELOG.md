@@ -6,6 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+- No user-visible changes yet.
+
+## [3.0.1] - 2026-03-25
+
 ### Headless send
 
 - added direct headless send for non-OAuth SMTP/IMAP accounts whose encrypted passwords are already stored in the Thunderbird or Betterbird profile
