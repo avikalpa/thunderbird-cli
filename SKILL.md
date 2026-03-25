@@ -17,6 +17,7 @@ Use this skill for local mail investigation through `/home/user/gh/thunderbird-c
 - Do not modify mbox, `.msf`, SQLite, or prefs files.
 - Writes are limited to Postgres and the optional legacy JSON cache.
 - Prefer explicit `--profile` when more than one profile exists.
+- When sending mail, prefer Thunderbird/Betterbird-mediated sending (`tb mail compose` or `tb mail send`) over raw SMTP if auditability matters. Raw SMTP can succeed technically while bypassing Betterbird's `Sent Items` workflow and local delivery-failure visibility.
 
 ## Repository and build
 
@@ -54,6 +55,11 @@ If Betterbird is installed by Flatpak, the usual root is `~/.var/app/eu.betterbi
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb mail show --folder <folder> --query "text" --limit 1 --thread
    ```
+5. Compose or send through Thunderbird/Betterbird when you need an auditable trail:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb mail compose --to someone@example.org --subject "Subject" --body "Body"
+   /home/user/gh/thunderbird-cli/bin/tb mail compose --to someone@example.org --subject "Subject" --body "Body" --send
+   ```
 
 ## Operational notes
 
@@ -61,6 +67,10 @@ If Betterbird is installed by Flatpak, the usual root is `~/.var/app/eu.betterbi
 - For machine-readable output, prefer `--raw` where available.
 - If no mail has been fetched into Postgres yet, `tb search` can self-hydrate once.
 - If the profile exists but has no configured account data, `tb` can still list profiles but searches and folder reads will be empty.
+- After any automated send, verify the result in the live mailbox, not just SMTP success:
+  - check `Sent Items` in Betterbird when the message should be user-auditable
+  - check `INBOX` and `Junk Mail` for delivery status notifications such as `Mail delivery failed: returning message to sender`
+  - prefer direct IMAP verification over local offline cache when timing matters
 
 ## When to read more
 
