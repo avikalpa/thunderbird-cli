@@ -58,12 +58,15 @@ If Betterbird is installed by Flatpak, the usual root is `~/.var/app/eu.betterbi
 5. Compose or send through Thunderbird/Betterbird when you need an auditable trail:
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb mail compose --to someone@example.org --subject "Subject" --body "Body"
-   /home/user/gh/thunderbird-cli/bin/tb mail compose --to someone@example.org --subject "Subject" --body "Body" --send
+   /home/user/gh/thunderbird-cli/bin/tb mail compose --profile base_config --to someone@example.org --subject "Subject" --body "Body" --send --open=false
+   /home/user/gh/thunderbird-cli/bin/tb mail compose --profile base_config --from avikalpakundu@gmail.com --to someone@example.org --subject "Subject" --body "Body" --send --open=false
    ```
 
 ## Operational notes
 
 - `--sync` will use `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
+- `compose/send` accepts `--from` to choose the Thunderbird/Betterbird identity explicitly when multiple accounts exist.
+- Thunderbird's CLI path handles `-compose`, not a true top-level `-send`; `compose --send --open=false` therefore uses an isolated temporary clone of the chosen profile plus `Xvfb`/`xdotool` automation to send without touching the live desktop.
 - For machine-readable output, prefer `--raw` where available.
 - If no mail has been fetched into Postgres yet, `tb search` can self-hydrate once.
 - If the profile exists but has no configured account data, `tb` can still list profiles but searches and folder reads will be empty.
@@ -71,6 +74,7 @@ If Betterbird is installed by Flatpak, the usual root is `~/.var/app/eu.betterbi
   - check `Sent Items` in Betterbird when the message should be user-auditable
   - check `INBOX` and `Junk Mail` for delivery status notifications such as `Mail delivery failed: returning message to sender`
   - prefer direct IMAP verification over local offline cache when timing matters
+  - forwarded support aliases can still bounce due to SPF at a downstream recipient even when the original submission succeeded; that is a recipient-side forwarding problem, not proof that the local send failed
 
 ## When to read more
 

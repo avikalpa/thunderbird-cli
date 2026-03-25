@@ -54,10 +54,14 @@ tb mail profiles
 ## Compose (read-only guardrails)
 - Open composer for review:  
   `tb mail compose --to a@b --subject "Check-in" --body "text"`
-- Send without opening (only when intentional):  
-  `tb mail compose --to a@b --subject "Send now" --body "text" --send`
+- Send without opening (isolated headless send, explicit profile):  
+  `tb mail compose --profile base_config --to a@b --subject "Send now" --body "text" --send --open=false`
+- Choose a specific identity when multiple accounts exist:  
+  `tb mail compose --profile base_config --from avikalpakundu@gmail.com --to a@b --subject "Send now" --body "text" --send --open=false`
+- Under the hood, this uses a temporary profile clone plus `Xvfb`/`xdotool`, because Thunderbird does not expose a reliable standalone CLI `-send` flag.
 
 ## Safety reminders
 - Searches read Postgres only; `--refresh` or `tb mail fetch` are the only paths that touch mbox files.
 - Avoid `--prune` unless you need strict DB mirroring of what Thunderbird has on disk.
 - Prefer `--account` + date bounds when narrowing recent evidence.
+- If a send target forwards mail onward, delivery status notifications may reflect downstream SPF failures even though Thunderbird successfully submitted the original message.

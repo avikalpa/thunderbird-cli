@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -201,12 +202,14 @@ func mailMain(args []string) {
 		}
 	case "compose":
 		cmd := flag.NewFlagSet("compose", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path (defaults to Thunderbird/Betterbird default)")
 		to := cmd.String("to", "", "comma-separated recipients")
 		cc := cmd.String("cc", "", "cc recipients")
+		from := cmd.String("from", "", "sender email/identity")
 		subject := cmd.String("subject", "", "subject")
 		body := cmd.String("body", "", "body text")
 		openComposer := cmd.Bool("open", true, "open Thunderbird compose window")
-		sendNow := cmd.Bool("send", false, "attempt to auto-send without GUI (-send)")
+		sendNow := cmd.Bool("send", false, "auto-send headlessly via an isolated Betterbird/Thunderbird profile clone")
 		cmd.Parse(args[1:])
 		if *to == "" {
 			log.Fatalf("compose: --to is required")
@@ -214,7 +217,7 @@ func mailMain(args []string) {
 		if !*openComposer && !*sendNow {
 			log.Fatalf("compose: nothing to do (set --open or --send)")
 		}
-		if err := app.compose(*to, *cc, *subject, *body, *openComposer, *sendNow); err != nil {
+		if err := app.compose(*profileName, *to, *cc, *from, *subject, *body, *openComposer, *sendNow); err != nil {
 			log.Fatalf("compose: %v", err)
 		}
 	case "fetch":
@@ -573,31 +576,35 @@ func (a *App) syncProfile(profile Profile) error {
 	return cmd.Run()
 }
 
-func (a *App) compose(to, cc, subject, body string, openComposer, sendNow bool) error {
+func (a *App) compose(profileName, to, cc, from, subject, body string, openComposer, sendNow bool) error {
 	baseCmd := findMailCommand()
-	var parts []string
-	parts = append(parts, fmt.Sprintf("to=%s", to))
-	if cc != "" {
-		parts = append(parts, fmt.Sprintf("cc=%s", cc))
+	var (
+		profile Profile
+		err     error
+	)
+	if profileName != "" || sendNow {
+		profile, err = a.resolveProfile(profileName)
+		if err != nil {
+			return err
+		}
 	}
-	if subject != "" {
-		parts = append(parts, fmt.Sprintf("subject=%s", subject))
+	composeArg, err := buildComposeArg(profile, to, cc, from, subject, body)
+	if err != nil {
+		return err
 	}
-	if body != "" {
-		parts = append(parts, fmt.Sprintf("body=%s", body))
+	if !openComposer && sendNow {
+		return runIsolatedHeadlessSend(baseCmd, profile, composeArg)
 	}
-	composeArg := strings.Join(parts, ",")
 	args := []string{"-compose", composeArg}
 	if sendNow {
-		args = append(args, "-send")
+		return fmt.Errorf("Thunderbird/Betterbird does not provide a supported CLI -send path; use --send --open=false for automated send")
+	}
+	if profileName != "" {
+		args = append([]string{"-P", profile.Name}, args...)
 	}
 	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if !openComposer && sendNow {
-		// Send without GUI; Thunderbird still needs to start to process the compose command.
-		return cmd.Run()
-	}
 	if openComposer {
 		return cmd.Run()
 	}
@@ -876,6 +883,332 @@ func findMailCommand() []string {
 	}
 	// Fallback; caller will fail if not present.
 	return []string{"thunderbird"}
+}
+
+func runIsolatedHeadlessSend(baseCmd []string, profile Profile, composeArg string) error {
+	clonedProfile, cleanup, err := cloneProfileForSend(profile)
+	if err != nil {
+		return err
+	}
+
+	if err := runAutomatedComposeSend(baseCmd, clonedProfile, composeArg); err != nil {
+		return fmt.Errorf("headless send via isolated profile %s: %w", clonedProfile, err)
+	}
+	cleanup()
+	return nil
+}
+
+func buildComposeArg(profile Profile, to, cc, from, subject, body string) (string, error) {
+	var parts []string
+	if profile.AbsolutePath != "" && from != "" {
+		preselectID, err := composeIdentityID(profile, from)
+		if err != nil {
+			return "", err
+		}
+		if preselectID != "" {
+			parts = append(parts, fmt.Sprintf("preselectid=%s", preselectID))
+		} else {
+			parts = append(parts, fmt.Sprintf("from=%s", from))
+		}
+	} else if from != "" {
+		parts = append(parts, fmt.Sprintf("from=%s", from))
+	}
+	parts = append(parts, fmt.Sprintf("to=%s", to))
+	if cc != "" {
+		parts = append(parts, fmt.Sprintf("cc=%s", cc))
+	}
+	if subject != "" {
+		parts = append(parts, fmt.Sprintf("subject=%s", subject))
+	}
+	if body != "" {
+		parts = append(parts, fmt.Sprintf("body=%s", body))
+	}
+	return strings.Join(parts, ","), nil
+}
+
+func composeIdentityID(profile Profile, email string) (string, error) {
+	prefsPath := filepath.Join(profile.AbsolutePath, "prefs.js")
+	prefs, err := parsePrefs(prefsPath)
+	if err != nil {
+		return "", err
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	for key, value := range prefs {
+		if !strings.HasPrefix(key, "mail.identity.") || !strings.HasSuffix(key, ".useremail") {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(value)) != email {
+			continue
+		}
+		return strings.TrimSuffix(strings.TrimPrefix(key, "mail.identity."), ".useremail"), nil
+	}
+	return "", nil
+}
+
+func runAutomatedComposeSend(baseCmd []string, clonedProfile, composeArg string) error {
+	display, xvfb, cleanup, err := startVirtualDisplay()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	args := []string{
+		"--new-instance",
+		"--no-remote",
+		"--profile", clonedProfile,
+		"-compose", composeArg,
+	}
+	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), "DISPLAY="+display)
+	if err := cmd.Start(); err != nil {
+		_ = xvfb.Process.Kill()
+		_, _ = xvfb.Process.Wait()
+		return err
+	}
+	defer func() {
+		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+			_ = cmd.Process.Kill()
+		}
+		_, _ = cmd.Process.Wait()
+	}()
+
+	wid, err := waitForComposeWindow(display, 45*time.Second)
+	if err != nil {
+		return err
+	}
+	time.Sleep(2 * time.Second)
+	if err := tryComposeSend(display, wid); err != nil {
+		return err
+	}
+	closed, err := waitForComposeWindowGone(display, wid, 20*time.Second)
+	if err != nil {
+		return err
+	}
+	if !closed {
+		return fmt.Errorf("compose window %s remained open after automated send attempt", wid)
+	}
+	time.Sleep(5 * time.Second)
+	return nil
+}
+
+func startVirtualDisplay() (string, *exec.Cmd, func(), error) {
+	if _, err := exec.LookPath("Xvfb"); err != nil {
+		return "", nil, nil, fmt.Errorf("Xvfb is required for unattended compose/send: %w", err)
+	}
+	display := ":98"
+	args := []string{display, "-screen", "0", "1280x900x24"}
+	cmd := exec.Command("Xvfb", args...)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return "", nil, nil, err
+	}
+	cleanup := func() {
+		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+			_ = cmd.Process.Kill()
+		}
+		_, _ = cmd.Process.Wait()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat("/tmp/.X11-unix/X98"); err == nil {
+			return display, cmd, cleanup, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	cleanup()
+	return "", nil, nil, fmt.Errorf("timed out starting Xvfb on %s", display)
+}
+
+func waitForComposeWindow(display string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		wid, err := xdotoolWindowSearch(display, "Write:")
+		if err == nil && wid != "" {
+			return wid, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return "", fmt.Errorf("timed out waiting for compose window on %s", display)
+}
+
+func waitForComposeWindowGone(display, wid string, timeout time.Duration) (bool, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		found, err := xdotoolWindowExists(display, wid)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			return true, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false, nil
+}
+
+func tryComposeSend(display, wid string) error {
+	if _, err := exec.LookPath("xdotool"); err != nil {
+		return fmt.Errorf("xdotool is required for unattended compose/send: %w", err)
+	}
+	for _, args := range [][]string{
+		{"key", "--window", wid, "ctrl+Return"},
+		{"key", "--window", wid, "alt+s"},
+		{"mousemove", "--window", wid, "40", "90", "click", "1"},
+	} {
+		cmd := exec.Command("xdotool", args...)
+		cmd.Env = append(os.Environ(), "DISPLAY="+display)
+		_ = cmd.Run()
+		time.Sleep(2 * time.Second)
+		found, err := xdotoolWindowExists(display, wid)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+	}
+	return nil
+}
+
+func xdotoolWindowSearch(display, name string) (string, error) {
+	cmd := exec.Command("xdotool", "search", "--name", name)
+	cmd.Env = append(os.Environ(), "DISPLAY="+display)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Fields(strings.TrimSpace(string(out)))
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no windows found for %q", name)
+	}
+	return lines[len(lines)-1], nil
+}
+
+func xdotoolWindowExists(display, wid string) (bool, error) {
+	cmd := exec.Command("xdotool", "getwindowname", wid)
+	cmd.Env = append(os.Environ(), "DISPLAY="+display)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func cloneProfileForSend(profile Profile) (string, func(), error) {
+	parent := filepath.Join(filepath.Dir(profile.AbsolutePath), ".tb-send")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", nil, fmt.Errorf("create send-profile root: %w", err)
+	}
+	dst, err := os.MkdirTemp(parent, "profile-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create send-profile tempdir: %w", err)
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(dst)
+	}
+	if err := copyProfileTree(profile.AbsolutePath, dst); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return dst, cleanup, nil
+}
+
+func copyProfileTree(srcRoot, dstRoot string) error {
+	return filepath.WalkDir(srcRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		name := d.Name()
+		if shouldSkipProfilePath(rel, name, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(dstRoot, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(linkTarget, target)
+		}
+		return copyProfileFile(path, target, info.Mode().Perm())
+	})
+}
+
+func shouldSkipProfilePath(rel, name string, isDir bool) bool {
+	base := strings.ToLower(name)
+	if rel == "." {
+		return false
+	}
+	if isDir {
+		return true
+	}
+	if strings.Contains(rel, string(os.PathSeparator)) {
+		return true
+	}
+	switch base {
+	case "prefs.js",
+		"user.js",
+		"logins.json",
+		"logins-backup.json",
+		"key4.db",
+		"cert9.db",
+		"pkcs11.txt",
+		"openpgp.sqlite",
+		"permissions.sqlite",
+		"compatibility.ini",
+		"xulstore.json",
+		"addonstartup.json.lz4",
+		"addons.json",
+		"extensions.json",
+		"extension-preferences.json",
+		"extension-settings.json",
+		"handlers.json":
+		return false
+	}
+	return true
+}
+
+func copyProfileFile(src, dst string, perm fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func readMailboxRecent(box Mailbox, limit int, query string) ([]MailSummary, error) {

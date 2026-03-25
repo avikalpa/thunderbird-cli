@@ -43,8 +43,11 @@ go build -o bin/tb ./...
 4) **Compose**  
    ```sh
    tb mail compose --to a@b --subject "Update" --body "text"   # opens composer
-   tb mail compose --to a@b --subject "Send now" --body "text" --send
+   tb mail compose --profile base_config --to a@b --subject "Send now" --body "text" --send --open=false
+   tb mail compose --profile base_config --from avikalpakundu@gmail.com --to support@mentors.debian.net --subject "Support" --body "..." --send --open=false
    ```
+   - Thunderbird/Betterbird's command-line handler supports `-compose`, but not a real CLI `-send` path. `tb --send --open=false` therefore uses an isolated temporary clone of the selected profile plus a virtual X display (`Xvfb`) and `xdotool` to drive the compose window invisibly.
+   - Prefer `--profile` whenever multiple profiles exist.
 
 ## Commands (summary)
 - `tb mail profiles` — list Thunderbird profiles.
@@ -52,7 +55,7 @@ go build -o bin/tb ./...
 - `tb mail fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]` — ingest mail into Postgres (incremental by default; add `--full` for a full rebuild, implied when `--prune` is set).
 - `tb search ...` — search Postgres cache.
 - `tb mail show/read --folder <name> --query "<text>" [--limit N] [--thread]` — print full message(s).
-- `tb mail compose/send ...` — open/send via Thunderbird composer.
+- `tb mail compose/send [--profile p] [--from email] ...` — open/send via Thunderbird composer; `--send --open=false` uses isolated headless send.
 - `tb mail index ...` — legacy JSON cache (Postgres is the primary store).
 
 Note: the first refresh after enabling the fingerprinted incremental flow may perform a full scan to seed fingerprints; subsequent `--refresh` runs skip unchanged folders.
@@ -94,10 +97,10 @@ systemctl --user enable --now tb-fetch.timer
 ```
 
 ## Safety
-- Read-only against Thunderbird data; we never mutate mbox, `.msf`, or prefs. Writes happen only to Postgres and the optional legacy `.tb-index.json`.
+- Read-only against Thunderbird data; we never mutate the live profile's mbox, `.msf`, or prefs. Writes happen only to Postgres, the optional legacy `.tb-index.json`, and temporary send-profile clones under the Thunderbird root, which are deleted after a successful headless send.
 - `--prune` is destructive to the database (removes rows for the profile not seen in the current scan); leave it off unless you want strict mirroring. `--prune` implies a full rescan.
 - No folder argument is required—searches span all folders by default; use `--account` and date bounds to narrow.
-- Thunderbird GUI remains the owner for account setup and any risky operations (send, folder moves, deletes).
+- Thunderbird GUI remains the owner for account setup and any risky operations (folder moves, deletes). For automated send auditability, still verify `Sent Items` or the server-side mailbox after send.
 
 ## Tests
 ```sh
