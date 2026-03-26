@@ -6,6 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+- No user-visible changes yet.
+
+## [3.0.2] - 2026-03-26
+
 ### Mailbox triage
 
 - made `tb mail recent` the right first step for fresh-mail investigations:
