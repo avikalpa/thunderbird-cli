@@ -6,7 +6,9 @@
 - Default backend: SQLite. Optional backend: PostgreSQL via `TB_STORE=postgres` and `TB_PG_DSN=...`.
 - First command on an unfamiliar machine: `tb doctor`.
 - First command before a time-sensitive hunt: `tb mail fetch --profile <p> --sync`.
+- First inspection during a time-sensitive hunt: `tb mail recent INBOX --profile <p> --account <acct> --limit 20 --raw`, then the same for `Junk Mail`.
 - Preferred search output for machine consumption: `tb search --raw ...`.
+- Preferred exact-read follow-up after recent-mail triage: `tb mail show --message-id '<...>'`.
 - Preferred narrowing dimensions: `--account`, `--since`, `--till`. Use `--folder` only when it materially reduces noise.
 - Direct provider-aware headless send currently supports Google, Microsoft, and Yahoo identities stored in the selected Thunderbird or Betterbird profile.
 - If direct send is unavailable in the current build, `tb features` and `tb doctor` are the authority. Do not guess.
@@ -26,6 +28,7 @@
 ## Operational tips
 
 - `tb doctor` is the quickest way to understand profile detection, backend selection, and runtime blockers.
+- During mailbox triage, do not trust a guessed sender or subject too early. Recent-mail inspection comes before keyword search.
 - SQLite is the default because local single-user search matters more than service setup friction.
 - PostgreSQL remains valuable, but it should be opt-in rather than a gate on first-run use.
 - Release/install work is part of product quality. Keep `install.sh`, `tb update`, and release packaging in sync.

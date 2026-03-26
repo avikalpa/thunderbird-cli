@@ -82,6 +82,41 @@ Inspect the live environment:
    /home/user/gh/thunderbird-cli/bin/tb mail compose --profile <profile> --from someone@example.org --to recipient@example.org --subject "Subject" --body "Body" --send --open=false
    ```
 
+## Time-sensitive mailbox triage
+
+Do not start a live incident hunt with a narrow keyword unless you already know the exact sender, subject, or failure string. Human replies often come from a different address and subject than the automated mail that started the thread.
+
+Preferred workflow:
+
+1. Sync first when freshness matters:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb mail fetch --profile <profile> --sync
+   ```
+2. Tail the newest inbox mail before searching:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb mail recent INBOX --profile <profile> --account <account@example.org> --limit 20 --raw
+   ```
+3. Check junk with the same pattern:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb mail recent "Junk Mail" --profile <profile> --account <account@example.org> --limit 20 --raw
+   ```
+4. Once the correct message is visible, inspect it directly by Message-ID:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb mail show --profile <profile> --message-id '<message-id-from-recent>'
+   ```
+5. Only after that, narrow with cache search if you need the surrounding thread or historical context:
+   ```sh
+   /home/user/gh/thunderbird-cli/bin/tb search --profile <profile> --account <account@example.org> --since 2026-01-01 --raw "keyword"
+   ```
+
+Anonymized example:
+
+- A maintainer-account workflow looked blocked because `tb search "support@service.example"` only showed old automated mail.
+- `tb mail recent INBOX --account ops@example.org --limit 20 --raw` exposed a new human reply from `person@project.example` with a different subject.
+- `tb mail show --message-id '<...>'` revealed the real next-step link.
+
+That is the default investigation path for mailbox triage now. Search comes after recent-message inspection, not before it.
+
 ## Operational notes
 
 - `--sync` uses `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
@@ -89,6 +124,7 @@ Inspect the live environment:
 - Standard SMTP/IMAP accounts with stored encrypted passwords can also use the direct headless send path when NSS-backed secret decryption is available.
 - If direct send is unavailable, `tb` falls back to isolated Betterbird automation for unsupported cases.
 - For machine-readable output, prefer `--raw` where available.
+- For mailbox triage, prefer `tb mail recent ... --raw` over guessing the right search term too early.
 - SQLite is the default because it is the lowest-friction portable search backend.
 - Switch to PostgreSQL only when you actually need it.
 

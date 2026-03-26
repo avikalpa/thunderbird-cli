@@ -56,11 +56,29 @@ Refresh before searching:
 tb search "shipment" --profile default --refresh --limit 50
 ```
 
+## Mailbox triage for fresh replies
+
+Use this when you suspect a new reply landed but the sender or subject may have changed.
+
+```sh
+tb mail fetch --profile default --sync
+tb mail recent INBOX --profile default --account user@example.com --limit 20 --raw
+tb mail recent "Junk Mail" --profile default --account user@example.com --limit 20 --raw
+tb mail show --profile default --message-id '<message-id-from-recent>'
+```
+
+Only after you know what the fresh mail looks like:
+
+```sh
+tb search --profile default --account user@example.com --since 2026-01-01 --raw "keyword"
+```
+
 ## Full-message inspection
 
 ```sh
 tb mail show --profile default --folder INBOX --query "subject fragment" --limit 1
 tb mail show --profile default --folder INBOX --query "subject fragment" --limit 1 --thread
+tb mail show --profile default --message-id '<exact-message-id>'
 ```
 
 ## Optional PostgreSQL path

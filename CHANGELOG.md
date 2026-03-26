@@ -6,7 +6,21 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
-- No user-visible changes yet.
+### Mailbox triage
+
+- made `tb mail recent` the right first step for fresh-mail investigations:
+  - added `--account`
+  - added `--raw`
+  - added `--sync`
+- added `tb mail show --message-id '<...>'` so agents and operators can open the exact mail discovered from a recent-message tail without guessing the subject again
+- updated the README, playbook, skill, and agent notes to make the intended workflow explicit:
+
+```bash
+tb mail fetch --profile default --sync
+tb mail recent INBOX --profile default --account user@example.org --limit 20 --raw
+tb mail recent "Junk Mail" --profile default --account user@example.org --limit 20 --raw
+tb mail show --profile default --message-id '<message-id-from-recent>'
+```
 
 ## [3.0.1] - 2026-03-25
 

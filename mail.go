@@ -133,12 +133,20 @@ func mailMain(args []string) {
 		profileName := cmd.String("profile", "", "profile name or path")
 		limit := cmd.Int("limit", 20, "max messages to show")
 		query := cmd.String("query", "", "substring filter against subject/from/body")
+		account := cmd.String("account", "", "filter by account email")
+		accountShort := cmd.String("ac", "", "alias for --account")
+		raw := cmd.Bool("raw", false, "plain output with account and message-id; better for scripts")
+		syncFirst := cmd.Bool("sync", false, "run Thunderbird/Betterbird sync before reading the mailbox tail")
 		cmd.Parse(args[1:])
 		pos := cmd.Args()
 		if len(pos) < 1 {
 			log.Fatalf("recent: folder name required (e.g. Inbox)")
 		}
-		if err := app.recent(pos[0], *profileName, *limit, *query); err != nil {
+		acct := *account
+		if acct == "" {
+			acct = *accountShort
+		}
+		if err := app.recent(pos[0], *profileName, acct, *limit, *query, *raw, *syncFirst); err != nil {
 			log.Fatalf("recent: %v", err)
 		}
 	case "search":
@@ -246,19 +254,20 @@ func mailMain(args []string) {
 		profileName := cmd.String("profile", "", "profile name or path")
 		folderLike := cmd.String("folder", "", "folder name/substring to search")
 		query := cmd.String("query", "", "substring match against subject/from/body")
+		messageID := cmd.String("message-id", "", "exact Message-ID match; more reliable than substring search when you already have a recent/raw hit")
 		limit := cmd.Int("limit", 1, "max messages to display")
 		account := cmd.String("account", "", "filter by account email")
 		accountShort := cmd.String("ac", "", "alias for --account")
 		thread := cmd.Bool("thread", false, "if set, show entire thread (same subject) after first match")
 		cmd.Parse(args[1:])
-		if *folderLike == "" || *query == "" {
-			log.Fatalf("show: --folder and --query are required")
+		if *messageID == "" && (*folderLike == "" || *query == "") {
+			log.Fatalf("show: either --message-id, or both --folder and --query, are required")
 		}
 		acct := *account
 		if acct == "" {
 			acct = *accountShort
 		}
-		if err := app.showMail(*profileName, *folderLike, *query, acct, *limit, *thread); err != nil {
+		if err := app.showMail(*profileName, *folderLike, *query, *messageID, acct, *limit, *thread); err != nil {
 			log.Fatalf("show: %v", err)
 		}
 	default:
@@ -271,11 +280,11 @@ func mailUsage() {
 	log.Println("Commands:")
 	log.Println("  profiles                             list Thunderbird profiles from profiles.ini")
 	log.Println("  folders [--profile name]             list mailboxes for a profile")
-	log.Println("  recent <folder> [--query q]          show recent messages from a folder")
+	log.Println("  recent <folder> [--profile p] [--account/--ac email] [--limit N] [--query q] [--raw] [--sync]  show newest messages from a folder before narrowing search terms")
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--folder name] [--refresh] [--full-rescan] [--raw] [--fuzzy]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
-	log.Println("  show/read --folder <name> --query <text> [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages matching substring (optionally whole thread)")
+	log.Println("  show/read [--folder <name> --query <text> | --message-id <id>] [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages or a whole thread")
 	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
 }
 
@@ -353,33 +362,151 @@ func (a *App) printFolders(profileName string) error {
 	return nil
 }
 
-func (a *App) recent(folder, profileName string, limit int, query string) error {
+func (a *App) recent(folder, profileName, accountEmail string, limit int, query string, raw bool, syncFirst bool) error {
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
+	}
+	accountEmail = strings.ToLower(strings.TrimSpace(accountEmail))
+	if syncFirst {
+		if err := a.syncProfile(profile); err != nil {
+			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+		}
 	}
 	boxes, err := a.listMailboxes(profile)
 	if err != nil {
 		return err
 	}
-	box, ok := findMailbox(boxes, folder)
-	if !ok {
-		return fmt.Errorf("folder %s not found; try `tb mail folders --profile %s`", folder, profile.Name)
+	dirToAccount, err := a.accountDirIndex(profile)
+	if err != nil {
+		return fmt.Errorf("account index: %w", err)
 	}
-	messages, err := readMailboxRecent(box, limit, query)
+	boxes, err = filterMailboxes(boxes, folder, accountEmail, dirToAccount)
 	if err != nil {
 		return err
+	}
+	var messages []MailSummary
+	for _, box := range boxes {
+		targetAccount := accountEmail
+		if targetAccount == "" {
+			targetAccount = accountForPath(box.Path, dirToAccount)
+		}
+		boxMessages, err := readMailboxRecent(box, limit, query)
+		if err != nil {
+			log.Printf("warn: recent %s: %v", box.Name, err)
+			continue
+		}
+		decorateMessages(boxMessages, profile.Name, targetAccount)
+		messages = append(messages, boxMessages...)
 	}
 	if len(messages) == 0 {
 		fmt.Println("No messages found.")
 		return nil
 	}
-	fmt.Printf("Recent from %s (profile %s):\n", box.Name, profile.Name)
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		fmt.Printf("%-16s | %-40s | %-40s | %s\n", m.Date, truncate(m.From, 38), truncate(m.Subject, 60), truncate(m.Snippet, 80))
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].When.IsZero() && messages[j].When.IsZero() {
+			return messages[i].Date > messages[j].Date
+		}
+		if messages[i].When.IsZero() {
+			return false
+		}
+		if messages[j].When.IsZero() {
+			return true
+		}
+		return messages[i].When.After(messages[j].When)
+	})
+	if limit > 0 && len(messages) > limit {
+		messages = messages[:limit]
 	}
-	return nil
+	if raw {
+		for _, m := range messages {
+			date := m.Date
+			if !m.When.IsZero() {
+				date = m.When.Format("2006-01-02 15:04")
+			}
+			fmt.Printf("%s | %s | %s | %s | %s | %s | %s\n",
+				date,
+				truncate(m.Account, 32),
+				truncate(m.Folder, 36),
+				truncate(m.From, 40),
+				truncate(m.Subject, 60),
+				truncate(m.MessageID, 72),
+				truncate(m.Snippet, 120))
+		}
+		return nil
+	}
+	fmt.Printf("Recent from %s (profile %s):\n", folder, profile.Name)
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "DATE\tACCOUNT\tFOLDER\tFROM\tSUBJECT\tSNIPPET\n")
+	fmt.Fprintf(w, "----\t-------\t------\t----\t-------\t-------\n")
+	for _, m := range messages {
+		date := m.Date
+		if !m.When.IsZero() {
+			date = m.When.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			date,
+			truncate(m.Account, 24),
+			truncate(m.Folder, 24),
+			truncate(m.From, 40),
+			truncate(m.Subject, 60),
+			truncate(m.Snippet, 100))
+	}
+	return w.Flush()
+}
+
+func (a *App) accountDirIndex(profile Profile) (map[string]string, error) {
+	dirToAccount := map[string]string{}
+	idx, err := a.loadAccountDirIndex(profile)
+	if err != nil {
+		return dirToAccount, err
+	}
+	for acct, dirs := range idx {
+		for _, d := range dirs {
+			dirToAccount[d] = acct
+		}
+	}
+	return dirToAccount, nil
+}
+
+func filterMailboxes(boxes []Mailbox, folderLike, accountEmail string, dirToAccount map[string]string) ([]Mailbox, error) {
+	if accountEmail != "" {
+		var scoped []Mailbox
+		for _, b := range boxes {
+			if accountForPath(b.Path, dirToAccount) == accountEmail {
+				scoped = append(scoped, b)
+			}
+		}
+		boxes = scoped
+		if len(boxes) == 0 {
+			return nil, fmt.Errorf("no folders for account %s", accountEmail)
+		}
+	}
+	if folderLike == "" {
+		return boxes, nil
+	}
+	needle := strings.ToLower(folderLike)
+	var filtered []Mailbox
+	for _, b := range boxes {
+		if strings.Contains(strings.ToLower(b.Name), needle) || strings.Contains(strings.ToLower(filepath.Base(b.Name)), needle) {
+			filtered = append(filtered, b)
+		}
+	}
+	if len(filtered) == 0 {
+		if accountEmail != "" {
+			return nil, fmt.Errorf("no folders match %q in account %s", folderLike, accountEmail)
+		}
+		return nil, fmt.Errorf("no folders match %q", folderLike)
+	}
+	return filtered, nil
+}
+
+func matchMessage(summary MailSummary, bodyText, queryLower, messageID string) bool {
+	if messageID != "" {
+		return strings.TrimSpace(summary.MessageID) == strings.TrimSpace(messageID)
+	}
+	blob := strings.ToLower(strings.Join([]string{summary.Subject, summary.From, bodyText}, " "))
+	return strings.Contains(blob, queryLower)
 }
 
 func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, raw bool, since, till time.Time, refresh bool, fullRescan bool, fuzzy bool) error {
@@ -1616,7 +1743,7 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
-func (a *App) showMail(profileName, folderLike, query, accountEmail string, limit int, thread bool) error {
+func (a *App) showMail(profileName, folderLike, query, messageID, accountEmail string, limit int, thread bool) error {
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
@@ -1626,95 +1753,80 @@ func (a *App) showMail(profileName, folderLike, query, accountEmail string, limi
 	if err != nil {
 		return err
 	}
-	var target Mailbox
-	found := false
-	for _, b := range boxes {
-		needle := strings.ToLower(folderLike)
-		if strings.Contains(strings.ToLower(b.Name), needle) || strings.Contains(strings.ToLower(filepath.Base(b.Name)), needle) {
-			target = b
-			found = true
-			break
-		}
+	dirToAccount, err := a.accountDirIndex(profile)
+	if err != nil {
+		return fmt.Errorf("account index: %w", err)
 	}
-	if !found {
-		return fmt.Errorf("no folders match %q", folderLike)
-	}
-
-	if accountEmail != "" {
-		idx, err := a.loadAccountDirIndex(profile)
-		if err != nil {
-			return fmt.Errorf("account index: %w", err)
-		}
-		dirs := idx[accountEmail]
-		ok := false
-		for _, d := range dirs {
-			if strings.HasPrefix(target.Path, d) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return fmt.Errorf("folder %s not in account %s", target.Name, accountEmail)
-		}
-	}
-
-	queryLower := strings.ToLower(query)
-	f, err := os.Open(target.Path)
+	boxes, err = filterMailboxes(boxes, folderLike, accountEmail, dirToAccount)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	reader := mbox.NewReader(f)
+
+	queryLower := strings.ToLower(query)
 	count := 0
 	var threadSubject string
 	var threadMsgs []struct {
 		summary  MailSummary
 		bodyText string
 	}
-	for {
-		if limit > 0 && count >= limit {
+	for _, target := range boxes {
+		if limit > 0 && count >= limit && !thread {
 			break
 		}
-		msgReader, err := reader.NextMessage()
-		if err == io.EOF {
-			break
-		}
+		f, err := os.Open(target.Path)
 		if err != nil {
-			log.Printf("warn: %s: %v", target.Name, err)
-			continue
+			return err
 		}
-		summary, bodyText, err := parseMessageFull(msgReader, target.Name)
-		if err != nil {
-			continue
+		reader := mbox.NewReader(f)
+		targetAccount := accountEmail
+		if targetAccount == "" {
+			targetAccount = accountForPath(target.Path, dirToAccount)
 		}
-		if accountEmail != "" {
-			summary.Account = accountEmail
-		}
-		blob := strings.ToLower(strings.Join([]string{summary.Subject, summary.From, bodyText}, " "))
-		normSub := normalizeSubject(summary.Subject)
-		if thread && threadSubject != "" {
-			if normSub == threadSubject {
+		for {
+			if limit > 0 && count >= limit && !thread {
+				break
+			}
+			msgReader, err := reader.NextMessage()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Printf("warn: %s: %v", target.Name, err)
+				continue
+			}
+			summary, bodyText, err := parseMessageFull(msgReader, target.Name)
+			if err != nil {
+				continue
+			}
+			if targetAccount != "" {
+				summary.Account = targetAccount
+			}
+			normSub := normalizeSubject(summary.Subject)
+			if thread && threadSubject != "" {
+				if normSub == threadSubject {
+					threadMsgs = append(threadMsgs, struct {
+						summary  MailSummary
+						bodyText string
+					}{summary: summary, bodyText: bodyText})
+				}
+				continue
+			}
+			if !matchMessage(summary, bodyText, queryLower, messageID) {
+				continue
+			}
+			if thread {
+				threadSubject = normSub
 				threadMsgs = append(threadMsgs, struct {
 					summary  MailSummary
 					bodyText string
 				}{summary: summary, bodyText: bodyText})
+			} else {
+				count++
+				printFullMessage(summary, bodyText)
+				fmt.Println(strings.Repeat("-", 80))
 			}
-			continue
 		}
-		if !strings.Contains(blob, queryLower) {
-			continue
-		}
-		if thread {
-			threadSubject = normSub
-			threadMsgs = append(threadMsgs, struct {
-				summary  MailSummary
-				bodyText string
-			}{summary: summary, bodyText: bodyText})
-		} else {
-			count++
-			printFullMessage(summary, bodyText)
-			fmt.Println(strings.Repeat("-", 80))
-		}
+		_ = f.Close()
 	}
 	if thread {
 		if len(threadMsgs) == 0 {

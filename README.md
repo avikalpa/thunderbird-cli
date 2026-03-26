@@ -77,6 +77,30 @@ That makes the tool easier to install, easier to carry to another machine, and e
 4. trigger sync through the configured mail client when needed
 5. send headlessly from profile-backed identities when the build and runtime support it
 
+## Mailbox Triage First
+
+If you are chasing a fresh reply, delivery-status notice, or account-recovery message, do not begin with a narrow keyword search unless you already know the exact sender or subject.
+
+That mistake is how people miss important human replies. Automated account mail often starts from one address, then a maintainer or support person answers from another address with a different subject line.
+
+Use this order instead:
+
+```bash
+tb doctor
+tb mail fetch --profile default --sync
+tb mail recent INBOX --profile default --account ops@example.org --limit 20 --raw
+tb mail recent "Junk Mail" --profile default --account ops@example.org --limit 20 --raw
+tb mail show --profile default --message-id '<message-id-from-recent>'
+tb search --profile default --account ops@example.org --since 2026-01-01 --raw "keyword you learned from the fresh mail"
+```
+
+That sequence is deliberate:
+
+- `fetch --sync` makes the local profile fresh
+- `recent ... --raw` shows the newest messages even when the sender or subject changed
+- `show --message-id` inspects the exact mail you just found
+- `search` comes after you know what you are really hunting
+
 ## The Storage Model
 
 Thunderbird and Betterbird keep the mail. `tb` keeps the operator cache.
@@ -359,8 +383,17 @@ Practical rule for agents:
 
 - start with `tb doctor`
 - use `tb mail fetch --sync` before time-sensitive hunts
+- inspect `tb mail recent INBOX --raw` and `tb mail recent "Junk Mail" --raw` before trusting a guessed keyword
+- when `recent` reveals the right mail, open it with `tb mail show --message-id '<...>'`
 - prefer `tb search --raw` when another tool needs stable parseable output
 - verify automated send through Sent/INBOX/Junk evidence, not SMTP success alone
+
+Anonymized incident pattern worth following:
+
+- an automated support thread started from one service address
+- the real answer later arrived from a human maintainer address under a different subject
+- keyword search on the original service address missed it
+- the correct workflow was `fetch --sync`, `recent INBOX`, `recent Junk Mail`, then `show --message-id`
 
 ## Systemd Example
 
