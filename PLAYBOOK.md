@@ -116,6 +116,19 @@ This path now covers both:
 - OAuth-backed accounts such as Gmail, Outlook, and Yahoo
 - standard SMTP/IMAP accounts whose encrypted passwords are already stored in the Thunderbird or Betterbird profile
 
+Authentication verdict from the receiver side:
+
+```sh
+tb mail authcheck \
+  --profile base_config \
+  --from avikalpa@gour.top \
+  --to avikalpakundu@gmail.com \
+  --read-as avikalpakundu@gmail.com \
+  --wait 5m
+```
+
+Use this when you need the receiving provider's actual headers instead of guessing from DNS alone.
+
 ## Safety reminders
 
 - `tb doctor` is the first diagnostic command, not an afterthought.

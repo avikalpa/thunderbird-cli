@@ -228,6 +228,27 @@ func mailMain(args []string) {
 		if err := app.compose(*profileName, *to, *cc, *from, *subject, *body, *openComposer, *sendNow); err != nil {
 			log.Fatalf("compose: %v", err)
 		}
+	case "authcheck":
+		cmd := flag.NewFlagSet("authcheck", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		from := cmd.String("from", "", "sender identity email")
+		to := cmd.String("to", "", "recipient address to send the test to")
+		readAs := cmd.String("read-as", "", "account email to poll for the delivered message (defaults to --to)")
+		subject := cmd.String("subject", "", "override subject; defaults to an auto-generated authcheck subject")
+		body := cmd.String("body", "", "override message body")
+		wait := cmd.Duration("wait", 2*time.Minute, "how long to wait for delivery before giving up")
+		mailboxes := cmd.String("mailboxes", "", "comma-separated mailbox list to poll; defaults based on the reader account provider")
+		cmd.Parse(args[1:])
+		var boxes []string
+		for _, box := range strings.Split(*mailboxes, ",") {
+			box = strings.TrimSpace(box)
+			if box != "" {
+				boxes = append(boxes, box)
+			}
+		}
+		if err := app.authcheck(*profileName, *from, *to, *readAs, *subject, *body, *wait, boxes); err != nil {
+			log.Fatalf("authcheck: %v", err)
+		}
 	case "fetch":
 		cmd := flag.NewFlagSet("fetch", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
@@ -286,6 +307,7 @@ func mailUsage() {
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
 	log.Println("  show/read [--folder <name> --query <text> | --message-id <id>] [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages or a whole thread")
 	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
+	log.Println("  authcheck --from a@b --to c@d [--read-as x@y] [--wait 2m] [--mailboxes m1,m2]  send a test and print authentication headers from the receiving account")
 }
 
 func newApp() *App {

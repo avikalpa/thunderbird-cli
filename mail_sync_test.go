@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,5 +47,31 @@ func TestSyncTimeoutDefaultAndOverride(t *testing.T) {
 	t.Setenv("TB_SYNC_TIMEOUT", "bogus")
 	if got := syncTimeout(); got != 90*time.Second {
 		t.Fatalf("invalid timeout should fall back to 90s, got %s", got)
+	}
+}
+
+func TestDefaultAuthcheckMailboxes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		host string
+		want []string
+	}{
+		{name: "gmail", host: "imap.gmail.com", want: []string{"INBOX", "[Gmail]/All Mail", "[Gmail]/Spam"}},
+		{name: "yahoo", host: "imap.mail.yahoo.com", want: []string{"INBOX", "Bulk", "Spam"}},
+		{name: "office365", host: "outlook.office365.com", want: []string{"INBOX", "Junk Email", "Junk"}},
+		{name: "generic", host: "mail.example.com", want: []string{"INBOX", "Junk Mail", "Spam"}},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := defaultAuthcheckMailboxes(sendAccountConfig{
+				Incoming: serverConfig{Hostname: tt.host},
+			})
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("mailboxes for %s = %v, want %v", tt.host, got, tt.want)
+			}
+		})
 	}
 }

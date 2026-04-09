@@ -103,6 +103,27 @@ That sequence is deliberate:
 
 If `tb` detects a Flatpak Betterbird/Thunderbird install from a headless shell with no real GUI session, `--sync` now fails fast with a clear error instead of hanging behind GTK noise. In that case either point `THUNDERBIRD_BIN` at a native binary or skip `--sync` and inspect the already-synced local mailbox cache. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`).
 
+## Authentication Checks
+
+When you need to prove what a receiving provider thinks about a message, use `authcheck` instead of stitching together `compose`, IMAP polling, and header scraping by hand:
+
+```bash
+tb mail authcheck \
+  --profile base_config \
+  --from avikalpa@gour.top \
+  --to avikalpakundu@gmail.com \
+  --read-as avikalpakundu@gmail.com \
+  --wait 5m
+```
+
+What it does:
+
+- sends a real message through the sender identity already configured in Thunderbird or Betterbird
+- polls the receiving account over IMAP using the credentials or OAuth token already stored in the same profile
+- prints the delivered message's authentication headers such as `Authentication-Results`, `Received-SPF`, and `DKIM-Signature`
+
+If the reader account is Gmail, Yahoo, or Outlook, `tb` chooses sensible mailbox defaults automatically. Override them with `--mailboxes` when a provider files the message somewhere unusual.
+
 ## The Storage Model
 
 Thunderbird and Betterbird keep the mail. `tb` keeps the operator cache.
