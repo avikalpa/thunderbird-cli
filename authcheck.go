@@ -33,8 +33,9 @@ func (a *App) authcheck(profileName, from, to, readAs, subject, body string, wai
 		readAs = to
 	}
 	if subject == "" {
-		stamp := time.Now().UTC().Format("20060102T150405Z")
-		subject = fmt.Sprintf("[tb-authcheck %s]", stamp)
+		stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+		toTag := strings.NewReplacer("@", "_at_", ".", "_", "+", "_plus_").Replace(strings.ToLower(to))
+		subject = fmt.Sprintf("[tb-authcheck %s %s]", toTag, stamp)
 	}
 	if body == "" {
 		body = fmt.Sprintf("Authentication check for %s via %s at %s", to, from, time.Now().UTC().Format(time.RFC3339))
