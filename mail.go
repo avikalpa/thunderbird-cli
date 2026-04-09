@@ -696,11 +696,23 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 
 func (a *App) syncProfile(profile Profile) error {
 	baseCmd := findMailCommand()
+	if err := validateSyncEnvironment(baseCmd); err != nil {
+		return err
+	}
 	args := []string{"-headless", "-P", profile.Name, "-mail"}
-	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
+	timeout := syncTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, baseCmd[0], append(baseCmd[1:], args...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("mail sync timed out after %s; set TB_SYNC_TIMEOUT to adjust", timeout)
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *App) compose(profileName, to, cc, from, subject, body string, openComposer, sendNow bool) error {
@@ -1046,6 +1058,41 @@ func findMailCommand() []string {
 	}
 	// Fallback; caller will fail if not present.
 	return []string{"thunderbird"}
+}
+
+func syncTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("TB_SYNC_TIMEOUT"))
+	if raw == "" {
+		return 90 * time.Second
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 90 * time.Second
+	}
+	return d
+}
+
+func validateSyncEnvironment(baseCmd []string) error {
+	if !mailCommandUsesFlatpak(baseCmd) {
+		return nil
+	}
+	if guiSessionAvailable() {
+		return nil
+	}
+	return fmt.Errorf("mail sync via Flatpak Betterbird/Thunderbird requires a real GUI session; set THUNDERBIRD_BIN to a native binary or run without --sync")
+}
+
+func mailCommandUsesFlatpak(baseCmd []string) bool {
+	if len(baseCmd) == 0 {
+		return false
+	}
+	return filepath.Base(baseCmd[0]) == "flatpak"
+}
+
+func guiSessionAvailable() bool {
+	return strings.TrimSpace(os.Getenv("DISPLAY")) != "" ||
+		strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" ||
+		strings.TrimSpace(os.Getenv("MIR_SOCKET")) != ""
 }
 
 func runIsolatedHeadlessSend(baseCmd []string, profile Profile, composeArg string) error {

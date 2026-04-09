@@ -65,6 +65,13 @@ tb mail fetch --profile default --sync
 tb mail recent INBOX --profile default --account user@example.com --limit 20 --raw
 tb mail recent "Junk Mail" --profile default --account user@example.com --limit 20 --raw
 tb mail show --profile default --message-id '<message-id-from-recent>'
+
+If `tb mail fetch --sync` is using a Flatpak Betterbird/Thunderbird install from a headless shell, it now fails fast with a clear error instead of disappearing into GTK noise. In that case either:
+
+- point `THUNDERBIRD_BIN` at a native Thunderbird/Betterbird binary, or
+- skip `--sync` and inspect the already-synced local mailbox cache
+
+You can tune the sync cap with `TB_SYNC_TIMEOUT=30s` (default `90s`).
 ```
 
 Only after you know what the fresh mail looks like:

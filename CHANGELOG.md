@@ -6,7 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
-- No user-visible changes yet.
+### Sync robustness
+
+- `tb mail fetch --sync` and `tb mail recent --sync` now fail fast when the detected mail client is a Flatpak Betterbird/Thunderbird install running from a headless shell with no real GUI session
+- sync runs now respect `TB_SYNC_TIMEOUT` (default `90s`) instead of hanging indefinitely behind GUI runtime noise
 
 ## [3.0.2] - 2026-03-26
 
