@@ -77,6 +77,23 @@ That makes the tool easier to install, easier to carry to another machine, and e
 4. trigger sync through the configured mail client when needed
 5. send headlessly from profile-backed identities when the build and runtime support it
 
+## Simple Commands
+
+The `mail ...` subcommands remain the full interface, but the fast operator path is now:
+
+```bash
+tb list INBOX --account ops@example.org --limit 20 --raw
+tb read --message-id '<message-id-from-list>'
+tb find --account ops@example.org --since 2026-01-01 --raw "keyword"
+```
+
+These are shorthands for:
+
+- `tb list ...` -> `tb mail recent ...`
+- `tb read ...` -> `tb mail show ...`
+- `tb find ...` -> `tb mail search ...`
+- `tb search ...` still works as the older search shorthand
+
 ## Mailbox Triage First
 
 If you are chasing a fresh reply, delivery-status notice, or account-recovery message, do not begin with a narrow keyword search unless you already know the exact sender or subject.
@@ -88,10 +105,10 @@ Use this order instead:
 ```bash
 tb doctor
 tb mail fetch --profile default --sync
-tb mail recent INBOX --profile default --account ops@example.org --limit 20 --raw
-tb mail recent "Junk Mail" --profile default --account ops@example.org --limit 20 --raw
-tb mail show --profile default --message-id '<message-id-from-recent>'
-tb search --profile default --account ops@example.org --since 2026-01-01 --raw "keyword you learned from the fresh mail"
+tb list INBOX --profile default --account ops@example.org --limit 20 --raw
+tb list "Junk Mail" --profile default --account ops@example.org --limit 20 --raw
+tb read --profile default --message-id '<message-id-from-recent>'
+tb find --profile default --account ops@example.org --since 2026-01-01 --raw "keyword you learned from the fresh mail"
 ```
 
 That sequence is deliberate:

@@ -6,6 +6,14 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+### Simpler mailbox commands
+
+- added three obvious top-level aliases for common mail operations:
+  - `tb list ...` -> `tb mail recent ...`
+  - `tb read ...` -> `tb mail show ...`
+  - `tb find ...` -> `tb mail search ...`
+- updated the README, playbook, skill notes, and agent notes to make `list -> read -> find` the default operator flow
+
 ### Sync robustness
 
 - `tb mail fetch --sync` and `tb mail recent --sync` now fail fast when the detected mail client is a Flatpak Betterbird/Thunderbird install running from a headless shell with no real GUI session

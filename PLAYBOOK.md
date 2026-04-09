@@ -10,6 +10,20 @@ tb doctor
 tb mail profiles
 ```
 
+## Fast operator aliases
+
+```sh
+tb list INBOX --account user@example.com --limit 20 --raw
+tb read --message-id '<message-id>'
+tb find --account user@example.com --since 2026-01-01 --raw "keyword"
+```
+
+Alias mapping:
+
+- `tb list ...` -> `tb mail recent ...`
+- `tb read ...` -> `tb mail show ...`
+- `tb find ...` -> `tb mail search ...`
+
 ## Hydrate the default cache
 
 Incremental refresh with sync:
@@ -62,9 +76,9 @@ Use this when you suspect a new reply landed but the sender or subject may have 
 
 ```sh
 tb mail fetch --profile default --sync
-tb mail recent INBOX --profile default --account user@example.com --limit 20 --raw
-tb mail recent "Junk Mail" --profile default --account user@example.com --limit 20 --raw
-tb mail show --profile default --message-id '<message-id-from-recent>'
+tb list INBOX --profile default --account user@example.com --limit 20 --raw
+tb list "Junk Mail" --profile default --account user@example.com --limit 20 --raw
+tb read --profile default --message-id '<message-id-from-recent>'
 
 If `tb mail fetch --sync` is using a Flatpak Betterbird/Thunderbird install from a headless shell, it now fails fast with a clear error instead of disappearing into GTK noise. In that case either:
 
@@ -77,7 +91,7 @@ You can tune the sync cap with `TB_SYNC_TIMEOUT=30s` (default `90s`).
 Only after you know what the fresh mail looks like:
 
 ```sh
-tb search --profile default --account user@example.com --since 2026-01-01 --raw "keyword"
+tb find --profile default --account user@example.com --since 2026-01-01 --raw "keyword"
 ```
 
 ## Full-message inspection

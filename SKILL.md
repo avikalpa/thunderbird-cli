@@ -82,6 +82,23 @@ Inspect the live environment:
    /home/user/gh/thunderbird-cli/bin/tb mail compose --profile <profile> --from someone@example.org --to recipient@example.org --subject "Subject" --body "Body" --send --open=false
    ```
 
+## Fast commands
+
+For simple operator work and agent prompts, prefer the short top-level commands:
+
+```sh
+/home/user/gh/thunderbird-cli/bin/tb list INBOX --account <account@example.org> --limit 20 --raw
+/home/user/gh/thunderbird-cli/bin/tb read --message-id '<message-id>'
+/home/user/gh/thunderbird-cli/bin/tb find --account <account@example.org> --since 2026-01-01 --raw "keyword"
+```
+
+Mapping:
+
+- `tb list ...` -> `tb mail recent ...`
+- `tb read ...` -> `tb mail show ...`
+- `tb find ...` -> `tb mail search ...`
+- `tb search ...` still works and maps to `tb mail search ...`
+
 ## Time-sensitive mailbox triage
 
 Do not start a live incident hunt with a narrow keyword unless you already know the exact sender, subject, or failure string. Human replies often come from a different address and subject than the automated mail that started the thread.
@@ -94,26 +111,26 @@ Preferred workflow:
    ```
 2. Tail the newest inbox mail before searching:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb mail recent INBOX --profile <profile> --account <account@example.org> --limit 20 --raw
+   /home/user/gh/thunderbird-cli/bin/tb list INBOX --profile <profile> --account <account@example.org> --limit 20 --raw
    ```
 3. Check junk with the same pattern:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb mail recent "Junk Mail" --profile <profile> --account <account@example.org> --limit 20 --raw
+   /home/user/gh/thunderbird-cli/bin/tb list "Junk Mail" --profile <profile> --account <account@example.org> --limit 20 --raw
    ```
 4. Once the correct message is visible, inspect it directly by Message-ID:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb mail show --profile <profile> --message-id '<message-id-from-recent>'
+   /home/user/gh/thunderbird-cli/bin/tb read --profile <profile> --message-id '<message-id-from-recent>'
    ```
 5. Only after that, narrow with cache search if you need the surrounding thread or historical context:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb search --profile <profile> --account <account@example.org> --since 2026-01-01 --raw "keyword"
+   /home/user/gh/thunderbird-cli/bin/tb find --profile <profile> --account <account@example.org> --since 2026-01-01 --raw "keyword"
    ```
 
 Anonymized example:
 
 - A maintainer-account workflow looked blocked because `tb search "support@service.example"` only showed old automated mail.
-- `tb mail recent INBOX --account ops@example.org --limit 20 --raw` exposed a new human reply from `person@project.example` with a different subject.
-- `tb mail show --message-id '<...>'` revealed the real next-step link.
+- `tb list INBOX --account ops@example.org --limit 20 --raw` exposed a new human reply from `person@project.example` with a different subject.
+- `tb read --message-id '<...>'` revealed the real next-step link.
 
 That is the default investigation path for mailbox triage now. Search comes after recent-message inspection, not before it.
 
