@@ -88,6 +88,8 @@ For simple operator work and agent prompts, prefer the short top-level commands:
 
 ```sh
 /home/user/gh/thunderbird-cli/bin/tb list INBOX --account <account@example.org> --limit 20 --raw
+/home/user/gh/thunderbird-cli/bin/tb tail --account <account@example.org> --limit 30 --raw --ignore-folder junk,trash
+/home/user/gh/thunderbird-cli/bin/tb head --account <account@example.org> --limit 10 --raw
 /home/user/gh/thunderbird-cli/bin/tb read --message-id '<message-id>'
 /home/user/gh/thunderbird-cli/bin/tb find --account <account@example.org> --since 2026-01-01 --raw "keyword"
 /home/user/gh/thunderbird-cli/bin/tb mail sentcheck --profile <profile> --from <account@example.org> --subject "Subject"
@@ -96,6 +98,8 @@ For simple operator work and agent prompts, prefer the short top-level commands:
 Mapping:
 
 - `tb list ...` -> `tb mail recent ...`
+- `tb tail ...` -> `tb mail unified ...`
+- `tb head ...` -> `tb mail unified --oldest ...`
 - `tb read ...` -> `tb mail show ...`
 - `tb find ...` -> `tb mail search ...`
 - `tb search ...` still works and maps to `tb mail search ...`
@@ -112,7 +116,7 @@ Preferred workflow:
    ```
 2. Tail the newest inbox mail before searching:
    ```sh
-   /home/user/gh/thunderbird-cli/bin/tb list INBOX --profile <profile> --account <account@example.org> --limit 20 --raw
+   /home/user/gh/thunderbird-cli/bin/tb tail --profile <profile> --account <account@example.org> --limit 30 --raw --ignore-folder junk,trash
    ```
 3. Check junk with the same pattern:
    ```sh
@@ -130,7 +134,7 @@ Preferred workflow:
 Anonymized example:
 
 - A maintainer-account workflow looked blocked because `tb search "support@service.example"` only showed old automated mail.
-- `tb list INBOX --account ops@example.org --limit 20 --raw` exposed a new human reply from `person@project.example` with a different subject.
+- `tb tail --account ops@example.org --limit 30 --raw --ignore-folder junk,trash` exposed a new human reply from `person@project.example` with a different subject.
 - `tb read --message-id '<...>'` revealed the real next-step link.
 
 That is the default investigation path for mailbox triage now. Search comes after recent-message inspection, not before it.

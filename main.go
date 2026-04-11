@@ -41,6 +41,12 @@ func main() {
 	case "list":
 		// Convenience: allow `tb list ...` as shorthand for `tb mail recent ...`.
 		mailMain(append([]string{"recent"}, os.Args[2:]...))
+	case "tail":
+		// Convenience: allow `tb tail ...` as shorthand for `tb mail unified ...`.
+		mailMain(append([]string{"unified"}, os.Args[2:]...))
+	case "head":
+		// Convenience: allow `tb head ...` as shorthand for `tb mail unified --oldest ...`.
+		mailMain(append([]string{"unified", "--oldest"}, os.Args[2:]...))
 	case "read":
 		// Convenience: allow `tb read ...` as shorthand for `tb mail show ...`.
 		mailMain(append([]string{"show"}, os.Args[2:]...))
@@ -66,6 +72,8 @@ func usage() {
 	log.Println("  update    update the installed binary from the latest GitHub release")
 	log.Println("  mail      work with Thunderbird profiles/mailboxes (profiles/folders/recent/search/compose)")
 	log.Println("  list      shorthand for: tb mail recent ...")
+	log.Println("  tail      shorthand for: tb mail unified ...")
+	log.Println("  head      shorthand for: tb mail unified --oldest ...")
 	log.Println("  read      shorthand for: tb mail show ...")
 	log.Println("  find      shorthand for: tb mail search ...")
 	log.Println("  search    shorthand for: tb mail search ...")
@@ -74,6 +82,7 @@ func usage() {
 	log.Println("  tb doctor")
 	log.Println("  tb mail profiles")
 	log.Println("  tb list INBOX --account ops@example.org --limit 20 --raw")
+	log.Println("  tb tail --limit 20 --raw --ignore-account alerts@example.org")
 	log.Println("  tb read --message-id '<message-id>'")
 	log.Println("  tb find \"court order\" --limit 10")
 	log.Println("  tb mail fetch --profile default --sync")

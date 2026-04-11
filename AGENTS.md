@@ -6,7 +6,7 @@
 - Default backend: SQLite. Optional backend: PostgreSQL via `TB_STORE=postgres` and `TB_PG_DSN=...`.
 - First command on an unfamiliar machine: `tb doctor`.
 - First command before a time-sensitive hunt: `tb mail fetch --profile <p> --sync`.
-- First inspection during a time-sensitive hunt: `tb list INBOX --profile <p> --account <acct> --limit 20 --raw`, then the same for `Junk Mail`.
+- First inspection during a time-sensitive hunt: `tb tail --profile <p> --account <acct> --limit 30 --raw --ignore-folder junk,trash`, then check `Junk Mail` separately if needed.
 - Preferred search output for machine consumption: `tb search --raw ...`.
 - Preferred exact-read follow-up after recent-mail triage: `tb read --message-id '<...>'`.
 - Preferred narrowing dimensions: `--account`, `--since`, `--till`. Use `--folder` only when it materially reduces noise.

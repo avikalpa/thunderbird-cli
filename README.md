@@ -83,6 +83,8 @@ The `mail ...` subcommands remain the full interface, but the fast operator path
 
 ```bash
 tb list INBOX --account ops@example.org --limit 20 --raw
+tb tail --account ops@example.org --limit 30 --raw --ignore-folder junk,trash
+tb head --account ops@example.org --limit 10 --raw
 tb read --message-id '<message-id-from-list>'
 tb find --account ops@example.org --since 2026-01-01 --raw "keyword"
 ```
@@ -90,6 +92,8 @@ tb find --account ops@example.org --since 2026-01-01 --raw "keyword"
 These are shorthands for:
 
 - `tb list ...` -> `tb mail recent ...`
+- `tb tail ...` -> `tb mail unified ...`
+- `tb head ...` -> `tb mail unified --oldest ...`
 - `tb read ...` -> `tb mail show ...`
 - `tb find ...` -> `tb mail search ...`
 - `tb search ...` still works as the older search shorthand
@@ -105,7 +109,7 @@ Use this order instead:
 ```bash
 tb doctor
 tb mail fetch --profile default --sync
-tb list INBOX --profile default --account ops@example.org --limit 20 --raw
+tb tail --profile default --account ops@example.org --limit 30 --raw --ignore-folder junk,trash
 tb list "Junk Mail" --profile default --account ops@example.org --limit 20 --raw
 tb read --profile default --message-id '<message-id-from-recent>'
 tb find --profile default --account ops@example.org --since 2026-01-01 --raw "keyword you learned from the fresh mail"
@@ -114,7 +118,8 @@ tb find --profile default --account ops@example.org --since 2026-01-01 --raw "ke
 That sequence is deliberate:
 
 - `fetch --sync` makes the local profile fresh
-- `recent ... --raw` shows the newest messages even when the sender or subject changed
+- `tail ... --raw` gives you a unified inbox view across accounts without forcing you to guess which inbox caught the reply
+- `--ignore-account` and `--ignore-folder` let you suppress noisy accounts or folders while triaging
 - `show --message-id` inspects the exact mail you just found
 - `search` comes after you know what you are really hunting
 

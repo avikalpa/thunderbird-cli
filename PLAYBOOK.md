@@ -14,6 +14,8 @@ tb mail profiles
 
 ```sh
 tb list INBOX --account user@example.com --limit 20 --raw
+tb tail --account user@example.com --limit 30 --raw --ignore-folder junk,trash
+tb head --account user@example.com --limit 10 --raw
 tb read --message-id '<message-id>'
 tb find --account user@example.com --since 2026-01-01 --raw "keyword"
 ```
@@ -21,6 +23,8 @@ tb find --account user@example.com --since 2026-01-01 --raw "keyword"
 Alias mapping:
 
 - `tb list ...` -> `tb mail recent ...`
+- `tb tail ...` -> `tb mail unified ...`
+- `tb head ...` -> `tb mail unified --oldest ...`
 - `tb read ...` -> `tb mail show ...`
 - `tb find ...` -> `tb mail search ...`
 
@@ -76,7 +80,7 @@ Use this when you suspect a new reply landed but the sender or subject may have 
 
 ```sh
 tb mail fetch --profile default --sync
-tb list INBOX --profile default --account user@example.com --limit 20 --raw
+tb tail --profile default --account user@example.com --limit 30 --raw --ignore-folder junk,trash
 tb list "Junk Mail" --profile default --account user@example.com --limit 20 --raw
 tb read --profile default --message-id '<message-id-from-recent>'
 

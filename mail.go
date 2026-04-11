@@ -149,6 +149,26 @@ func mailMain(args []string) {
 		if err := app.recent(pos[0], *profileName, acct, *limit, *query, *raw, *syncFirst); err != nil {
 			log.Fatalf("recent: %v", err)
 		}
+	case "unified":
+		cmd := flag.NewFlagSet("unified", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		limit := cmd.Int("limit", 20, "max messages to show")
+		query := cmd.String("query", "", "substring filter against subject/from/body")
+		account := cmd.String("account", "", "filter by account email")
+		accountShort := cmd.String("ac", "", "alias for --account")
+		raw := cmd.Bool("raw", false, "plain output with account and message-id; better for scripts")
+		syncFirst := cmd.Bool("sync", false, "run Thunderbird/Betterbird sync before reading the unified inbox tail")
+		oldest := cmd.Bool("oldest", false, "show oldest matches first instead of newest")
+		ignoreAccountsCSV := cmd.String("ignore-account", "", "comma-separated account emails to ignore")
+		ignoreFoldersCSV := cmd.String("ignore-folder", "", "comma-separated folder substrings to ignore")
+		cmd.Parse(args[1:])
+		acct := *account
+		if acct == "" {
+			acct = *accountShort
+		}
+		if err := app.unifiedInbox(*profileName, acct, *limit, *query, *raw, *syncFirst, *oldest, splitCSV(*ignoreAccountsCSV), splitCSV(*ignoreFoldersCSV)); err != nil {
+			log.Fatalf("unified: %v", err)
+		}
 	case "search":
 		cmd := flag.NewFlagSet("search", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
@@ -318,6 +338,7 @@ func mailUsage() {
 	log.Println("  profiles                             list Thunderbird profiles from profiles.ini")
 	log.Println("  folders [--profile name]             list mailboxes for a profile")
 	log.Println("  recent <folder> [--profile p] [--account/--ac email] [--limit N] [--query q] [--raw] [--sync]  show newest messages from a folder before narrowing search terms")
+	log.Println("  unified [--profile p] [--account/--ac email] [--limit N] [--query q] [--raw] [--sync] [--oldest] [--ignore-account a,b] [--ignore-folder x,y]  show a unified inbox list across accounts")
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--folder name] [--refresh] [--full-rescan] [--raw] [--fuzzy]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
@@ -494,6 +515,127 @@ func (a *App) recent(folder, profileName, accountEmail string, limit int, query 
 	return w.Flush()
 }
 
+func (a *App) unifiedInbox(profileName, accountEmail string, limit int, query string, raw bool, syncFirst bool, oldest bool, ignoreAccounts []string, ignoreFolders []string) error {
+	profile, err := a.resolveProfile(profileName)
+	if err != nil {
+		return err
+	}
+	accountEmail = strings.ToLower(strings.TrimSpace(accountEmail))
+	ignoreAccounts = normalizeMailFilters(ignoreAccounts)
+	ignoreFolders = normalizeMailFilters(ignoreFolders)
+
+	if syncFirst {
+		if err := a.syncProfile(profile); err != nil {
+			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+		}
+	}
+
+	boxes, err := a.listMailboxes(profile)
+	if err != nil {
+		return err
+	}
+	dirToAccount, err := a.accountDirIndex(profile)
+	if err != nil {
+		return fmt.Errorf("account index: %w", err)
+	}
+	boxes, err = filterMailboxes(boxes, "", accountEmail, dirToAccount)
+	if err != nil {
+		return err
+	}
+
+	boxes = filterUnifiedInboxMailboxes(boxes, dirToAccount, ignoreAccounts, ignoreFolders)
+	if len(boxes) == 0 {
+		return fmt.Errorf("no inbox folders matched the current filters")
+	}
+
+	perBoxLimit := limit
+	if perBoxLimit <= 0 {
+		perBoxLimit = 50
+	}
+	if perBoxLimit < 50 {
+		perBoxLimit = 50
+	}
+
+	var messages []MailSummary
+	for _, box := range boxes {
+		targetAccount := accountForPath(box.Path, dirToAccount)
+		boxMessages, err := readMailboxRecent(box, perBoxLimit, query)
+		if err != nil {
+			log.Printf("warn: unified %s: %v", box.Name, err)
+			continue
+		}
+		decorateMessages(boxMessages, profile.Name, targetAccount)
+		messages = append(messages, boxMessages...)
+	}
+	if len(messages) == 0 {
+		fmt.Println("No messages found.")
+		return nil
+	}
+
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].When.IsZero() && messages[j].When.IsZero() {
+			if oldest {
+				return messages[i].Date < messages[j].Date
+			}
+			return messages[i].Date > messages[j].Date
+		}
+		if messages[i].When.IsZero() {
+			return oldest
+		}
+		if messages[j].When.IsZero() {
+			return !oldest
+		}
+		if oldest {
+			return messages[i].When.Before(messages[j].When)
+		}
+		return messages[i].When.After(messages[j].When)
+	})
+	if limit > 0 && len(messages) > limit {
+		messages = messages[:limit]
+	}
+
+	if raw {
+		for _, m := range messages {
+			date := m.Date
+			if !m.When.IsZero() {
+				date = m.When.Format("2006-01-02 15:04")
+			}
+			fmt.Printf("%s | %s | %s | %s | %s | %s | %s\n",
+				date,
+				truncate(m.Account, 32),
+				truncate(m.Folder, 36),
+				truncate(m.From, 40),
+				truncate(m.Subject, 60),
+				truncate(m.MessageID, 72),
+				truncate(m.Snippet, 120))
+		}
+		return nil
+	}
+
+	title := "Unified inbox"
+	if oldest {
+		title = "Unified inbox (oldest first)"
+	}
+	fmt.Printf("%s (profile %s):\n", title, profile.Name)
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "DATE\tACCOUNT\tFOLDER\tFROM\tSUBJECT\tSNIPPET\n")
+	fmt.Fprintf(w, "----\t-------\t------\t----\t-------\t-------\n")
+	for _, m := range messages {
+		date := m.Date
+		if !m.When.IsZero() {
+			date = m.When.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			date,
+			truncate(m.Account, 24),
+			truncate(m.Folder, 24),
+			truncate(m.From, 40),
+			truncate(m.Subject, 60),
+			truncate(m.Snippet, 100))
+	}
+	return w.Flush()
+}
+
 func (a *App) accountDirIndex(profile Profile) (map[string]string, error) {
 	dirToAccount := map[string]string{}
 	idx, err := a.loadAccountDirIndex(profile)
@@ -538,6 +680,61 @@ func filterMailboxes(boxes []Mailbox, folderLike, accountEmail string, dirToAcco
 		return nil, fmt.Errorf("no folders match %q", folderLike)
 	}
 	return filtered, nil
+}
+
+func filterUnifiedInboxMailboxes(boxes []Mailbox, dirToAccount map[string]string, ignoreAccounts []string, ignoreFolders []string) []Mailbox {
+	var filtered []Mailbox
+	for _, b := range boxes {
+		if !isUnifiedInboxMailbox(b) {
+			continue
+		}
+		account := strings.ToLower(strings.TrimSpace(accountForPath(b.Path, dirToAccount)))
+		if account != "" && containsMailFilter(ignoreAccounts, account) {
+			continue
+		}
+		name := strings.ToLower(b.Name)
+		if containsMailFilter(ignoreFolders, name) {
+			continue
+		}
+		filtered = append(filtered, b)
+	}
+	return filtered
+}
+
+func isUnifiedInboxMailbox(box Mailbox) bool {
+	base := strings.ToLower(filepath.Base(box.Name))
+	switch base {
+	case "inbox":
+		return true
+	case "junk", "junk mail", "spam", "trash", "sent", "drafts", "archives":
+		return false
+	}
+	name := strings.ToLower(box.Name)
+	return strings.HasSuffix(name, "/inbox") || strings.Contains(name, "/inbox/")
+}
+
+func normalizeMailFilters(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func containsMailFilter(filters []string, value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, filter := range filters {
+		if filter == "" {
+			continue
+		}
+		if value == filter || strings.Contains(value, filter) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchMessage(summary MailSummary, bodyText, queryLower, messageID string) bool {
