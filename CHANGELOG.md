@@ -6,11 +6,20 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+- No user-visible changes yet.
+
+## [3.0.4] - 2026-04-12
+
 ### Mailbox triage
 
 - added `tb mail unified` plus the top-level aliases `tb tail` and `tb head`
 - unified inbox views now support `--ignore-account` and `--ignore-folder` so operators can suppress noisy accounts or mailbox paths during live triage
 - recent-mail hunting no longer requires guessing which single INBOX received the reply before you can inspect it by Message-ID
+
+### Sent verification
+
+- fixed `tb mail sentcheck` for servers where IMAP header search misses a just-sent message even though the message is present in the Sent mailbox
+- `sentcheck` now falls back to scanning recent Sent headers directly, so the verification path matches what `tb list 'Sent Items' --sync` already proves
 
 ## [3.0.3] - 2026-04-11
 

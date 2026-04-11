@@ -2,11 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/mail"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
+	"github.com/emersion/go-imap/client"
 )
 
 type sentcheckResult struct {
@@ -67,7 +70,8 @@ func pollSentMessages(account sendAccountConfig, subject, messageID, mailbox str
 	section := authcheckHeaderSection()
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) || time.Now().Equal(deadline) {
-		if _, err := imapClient.Select(mailbox, true); err == nil {
+		mbox, err := imapClient.Select(mailbox, true)
+		if err == nil {
 			crit := imap.NewSearchCriteria()
 			if subject != "" {
 				crit.Header.Add("Subject", subject)
@@ -93,6 +97,15 @@ func pollSentMessages(account sendAccountConfig, subject, messageID, mailbox str
 				}
 				return sentcheckResult{Mailbox: mailbox, Headers: headers}, nil
 			}
+
+			headers, err := fetchRecentSentHeaders(imapClient, mbox.Messages, section, limit)
+			if err != nil {
+				return sentcheckResult{}, err
+			}
+			matched := filterSentHeaders(headers, subject, messageID, limit)
+			if len(matched) > 0 {
+				return sentcheckResult{Mailbox: mailbox, Headers: matched}, nil
+			}
 		}
 		if time.Now().After(deadline) {
 			break
@@ -108,4 +121,66 @@ func pollSentMessages(account sendAccountConfig, subject, messageID, mailbox str
 		matchDesc = fmt.Sprintf("message-id %q", messageID)
 	}
 	return sentcheckResult{}, fmt.Errorf("no sent message with %s found in %q within %s", matchDesc, mailbox, wait)
+}
+
+func fetchRecentSentHeaders(imapClient *client.Client, total uint32, section *imap.BodySectionName, limit int) ([]string, error) {
+	if total == 0 {
+		return nil, nil
+	}
+	window := uint32(50)
+	if limit > 0 {
+		candidate := uint32(limit * 20)
+		if candidate > window {
+			window = candidate
+		}
+	}
+	if window > total {
+		window = total
+	}
+	start := total - window + 1
+	seq := new(imap.SeqSet)
+	seq.AddRange(start, total)
+	msgs := make(chan *imap.Message, window)
+	done := make(chan error, 1)
+	go func() {
+		done <- imapClient.Fetch(seq, []imap.FetchItem{section.FetchItem()}, msgs)
+	}()
+	var headers []string
+	for msg := range msgs {
+		if body := msg.GetBody(section); body != nil {
+			data, err := io.ReadAll(body)
+			if err != nil {
+				return nil, fmt.Errorf("read sentcheck headers: %w", err)
+			}
+			headers = append(headers, string(data))
+		}
+	}
+	if err := <-done; err != nil {
+		return nil, err
+	}
+	return headers, nil
+}
+
+func filterSentHeaders(headers []string, subject, messageID string, limit int) []string {
+	var matched []string
+	wantSubject := strings.TrimSpace(subject)
+	wantMessageID := strings.TrimSpace(messageID)
+	for i := len(headers) - 1; i >= 0; i-- {
+		hdr := headers[i]
+		parsed, err := mail.ReadMessage(strings.NewReader(hdr))
+		if err != nil {
+			continue
+		}
+		if wantSubject != "" && parsed.Header.Get("Subject") != wantSubject {
+			continue
+		}
+		if wantMessageID != "" && strings.TrimSpace(parsed.Header.Get("Message-ID")) != wantMessageID {
+			continue
+		}
+		matched = append(matched, hdr)
+		if limit > 0 && len(matched) >= limit {
+			break
+		}
+	}
+	return matched
 }
