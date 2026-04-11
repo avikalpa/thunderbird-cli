@@ -6,6 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+- No user-visible changes yet.
+
+## [3.0.3] - 2026-04-11
+
 ### Simpler mailbox commands
 
 - added three obvious top-level aliases for common mail operations:
@@ -23,6 +27,12 @@ This file is the second product surface after the README. It should tell a serio
 
 - added `tb mail authcheck` to send a real message and poll the receiving account over IMAP for the delivered authentication headers
 - useful for proving what Gmail, Yahoo, Outlook, or another real mailbox thought about SPF, DKIM, and DMARC instead of inferring from DNS alone
+
+### Sent verification
+
+- added `tb mail sentcheck` to verify a sent copy online via IMAP instead of trusting local cache state
+- this makes headless send auditable even while Betterbird is running and the local Sent folder has not synced yet
+- Microsoft / Outlook direct send now skips the extra IMAP Sent append, because Outlook already stores a Sent copy server-side and double-appending created duplicates
 
 ## [3.0.2] - 2026-03-26
 

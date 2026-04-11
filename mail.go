@@ -228,6 +228,22 @@ func mailMain(args []string) {
 		if err := app.compose(*profileName, *to, *cc, *from, *subject, *body, *openComposer, *sendNow); err != nil {
 			log.Fatalf("compose: %v", err)
 		}
+	case "sentcheck":
+		cmd := flag.NewFlagSet("sentcheck", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		from := cmd.String("from", "", "sender identity/account email")
+		subject := cmd.String("subject", "", "exact or partial subject to match in Sent")
+		messageID := cmd.String("message-id", "", "exact Message-ID to match in Sent")
+		mailbox := cmd.String("mailbox", "", "sent mailbox override")
+		wait := cmd.Duration("wait", 15*time.Second, "how long to poll IMAP for the sent copy")
+		limit := cmd.Int("limit", 1, "maximum matching messages to print")
+		cmd.Parse(args[1:])
+		if *subject == "" && *messageID == "" {
+			log.Fatalf("sentcheck: one of --subject or --message-id is required")
+		}
+		if err := app.sentcheck(*profileName, *from, *subject, *messageID, *mailbox, *wait, *limit); err != nil {
+			log.Fatalf("sentcheck: %v", err)
+		}
 	case "authcheck":
 		cmd := flag.NewFlagSet("authcheck", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
@@ -307,6 +323,7 @@ func mailUsage() {
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
 	log.Println("  show/read [--folder <name> --query <text> | --message-id <id>] [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages or a whole thread")
 	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
+	log.Println("  sentcheck [--from a@b] [--subject s | --message-id id] [--profile p] [--mailbox Sent] [--wait 15s] [--limit N]  verify sent mail online via IMAP")
 	log.Println("  authcheck --from a@b --to c@d [--read-as x@y] [--wait 2m] [--mailboxes m1,m2]  send a test and print authentication headers from the receiving account")
 }
 

@@ -204,6 +204,7 @@ For OAuth-backed providers, `tb mail compose --send --open=false` does this:
 3. refreshes an access token
 4. submits the message over SMTP with `XOAUTH2`
 5. appends the exact RFC822 message to the real Sent folder over IMAP
+6. you can verify that sent copy online with `tb mail sentcheck --from <account> --subject "..."`
 
 For stored-password accounts, `tb` does the same operator job without opening Betterbird:
 

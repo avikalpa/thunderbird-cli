@@ -90,6 +90,7 @@ For simple operator work and agent prompts, prefer the short top-level commands:
 /home/user/gh/thunderbird-cli/bin/tb list INBOX --account <account@example.org> --limit 20 --raw
 /home/user/gh/thunderbird-cli/bin/tb read --message-id '<message-id>'
 /home/user/gh/thunderbird-cli/bin/tb find --account <account@example.org> --since 2026-01-01 --raw "keyword"
+/home/user/gh/thunderbird-cli/bin/tb mail sentcheck --profile <profile> --from <account@example.org> --subject "Subject"
 ```
 
 Mapping:

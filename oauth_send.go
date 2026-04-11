@@ -384,8 +384,10 @@ func sendOAuthMessage(account sendAccountConfig, to, cc, subject, body string) e
 	if err := smtpSendXOAUTH2(account, accessToken, rawMsg, recipients); err != nil {
 		return err
 	}
-	if err := appendSentMessage(account, accessToken, rawMsg); err != nil {
-		return fmt.Errorf("message sent but failed to append to %q: %w", sentMailboxName(account.Identity.SentFolder), err)
+	if shouldAppendSentMessage(account) {
+		if err := appendSentMessage(account, accessToken, rawMsg); err != nil {
+			return fmt.Errorf("message sent but failed to append to %q: %w", sentMailboxName(account.Identity.SentFolder), err)
+		}
 	}
 	return nil
 }
@@ -481,6 +483,12 @@ func oauthConfigForAccount(account sendAccountConfig) (oauthProviderConfig, bool
 		}
 	}
 	return oauthProviderConfig{}, false
+}
+
+func shouldAppendSentMessage(account sendAccountConfig) bool {
+	// Outlook/Office 365 stores a Sent copy server-side for SMTP submission,
+	// so an explicit IMAP append creates duplicates.
+	return directSendProvider(account) != "microsoft"
 }
 
 func oauthScopeForAccount(account sendAccountConfig) string {
