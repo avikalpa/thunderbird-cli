@@ -75,3 +75,32 @@ func TestDefaultAuthcheckMailboxes(t *testing.T) {
 		})
 	}
 }
+
+func TestSyncCommandArgsUsesGUIModeForFlatpakSessions(t *testing.T) {
+	t.Setenv("DISPLAY", ":0")
+	got := syncCommandArgs([]string{"/usr/bin/flatpak", "run", "eu.betterbird.Betterbird"}, Profile{Name: "default"})
+	want := []string{"-P", "default", "-mail"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("sync args = %v, want %v", got, want)
+	}
+}
+
+func TestSyncCommandArgsKeepsHeadlessForNativeBinary(t *testing.T) {
+	t.Setenv("DISPLAY", ":0")
+	got := syncCommandArgs([]string{"/usr/bin/betterbird"}, Profile{Name: "default"})
+	want := []string{"-headless", "-P", "default", "-mail"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("sync args = %v, want %v", got, want)
+	}
+}
+
+func TestSyncCommandArgsHeadlessFlatpakWithoutGUI(t *testing.T) {
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("MIR_SOCKET", "")
+	got := syncCommandArgs([]string{"/usr/bin/flatpak", "run", "eu.betterbird.Betterbird"}, Profile{Name: "default"})
+	want := []string{"-headless", "-P", "default", "-mail"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("sync args = %v, want %v", got, want)
+	}
+}

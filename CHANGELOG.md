@@ -6,7 +6,11 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
-- No user-visible changes yet.
+### Sync behavior
+
+- `tb mail fetch --sync` now reuses an already-running Flatpak Betterbird/Thunderbird GUI session instead of failing just because the mail client is open
+- native Thunderbird/Betterbird binaries still use the existing headless sync path
+
 
 ## [3.0.4] - 2026-04-12
 

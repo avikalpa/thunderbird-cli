@@ -84,7 +84,7 @@ tb tail --profile default --account user@example.com --limit 30 --raw --ignore-f
 tb list "Junk Mail" --profile default --account user@example.com --limit 20 --raw
 tb read --profile default --message-id '<message-id-from-recent>'
 
-If `tb mail fetch --sync` is using a Flatpak Betterbird/Thunderbird install from a headless shell, it now fails fast with a clear error instead of disappearing into GTK noise. In that case either:
+If `tb mail fetch --sync` is using a Flatpak Betterbird/Thunderbird install with a real GUI session, it now reuses the already-running app. From a headless shell with no real GUI session, it still fails fast with a clear error instead of disappearing into GTK noise. In that case either:
 
 - point `THUNDERBIRD_BIN` at a native Thunderbird/Betterbird binary, or
 - skip `--sync` and inspect the already-synced local mailbox cache

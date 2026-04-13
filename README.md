@@ -123,7 +123,7 @@ That sequence is deliberate:
 - `show --message-id` inspects the exact mail you just found
 - `search` comes after you know what you are really hunting
 
-If `tb` detects a Flatpak Betterbird/Thunderbird install from a headless shell with no real GUI session, `--sync` now fails fast with a clear error instead of hanging behind GTK noise. In that case either point `THUNDERBIRD_BIN` at a native binary or skip `--sync` and inspect the already-synced local mailbox cache. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`).
+If `tb` detects a Flatpak Betterbird/Thunderbird install with a real GUI session, `--sync` now reuses the already-running app instead of failing just because Betterbird is open. If there is no real GUI session, `--sync` still fails fast with a clear error instead of hanging behind GTK noise. In that case either point `THUNDERBIRD_BIN` at a native binary or skip `--sync` and inspect the already-synced local mailbox cache. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`).
 
 ## Authentication Checks
 

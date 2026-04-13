@@ -142,6 +142,7 @@ That is the default investigation path for mailbox triage now. Search comes afte
 ## Operational notes
 
 - `--sync` uses `THUNDERBIRD_BIN` if set; otherwise it falls back to `betterbird`, `thunderbird`, or `flatpak run <THUNDERBIRD_FLATPAK_ID>`.
+- When the detected client is a Flatpak Betterbird/Thunderbird install and a real GUI session is available, `--sync` now reuses the already-running app instead of failing just because Betterbird is open.
 - Google, Microsoft, and Yahoo identities can use the direct OAuth send path when the current build includes it and the runtime supports it.
 - Standard SMTP/IMAP accounts with stored encrypted passwords can also use the direct headless send path when NSS-backed secret decryption is available.
 - If direct send is unavailable, `tb` falls back to isolated Betterbird automation for unsupported cases.

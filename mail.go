@@ -935,7 +935,7 @@ func (a *App) syncProfile(profile Profile) error {
 	if err := validateSyncEnvironment(baseCmd); err != nil {
 		return err
 	}
-	args := []string{"-headless", "-P", profile.Name, "-mail"}
+	args := syncCommandArgs(baseCmd, profile)
 	timeout := syncTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -1329,6 +1329,17 @@ func guiSessionAvailable() bool {
 	return strings.TrimSpace(os.Getenv("DISPLAY")) != "" ||
 		strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" ||
 		strings.TrimSpace(os.Getenv("MIR_SOCKET")) != ""
+}
+
+func syncCommandArgs(baseCmd []string, profile Profile) []string {
+	args := []string{"-P", profile.Name, "-mail"}
+	if !mailCommandUsesFlatpak(baseCmd) {
+		return append([]string{"-headless"}, args...)
+	}
+	if guiSessionAvailable() {
+		return args
+	}
+	return append([]string{"-headless"}, args...)
 }
 
 func runIsolatedHeadlessSend(baseCmd []string, profile Profile, composeArg string) error {
