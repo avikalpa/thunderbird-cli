@@ -127,6 +127,7 @@ Preferred workflow:
    /home/user/gh/thunderbird-cli/bin/tb read --profile <profile> --message-id '<message-id-from-recent>'
    ```
 5. Only after that, narrow with cache search if you need the surrounding thread or historical context:
+   Note: if you use `--since` / `--till` and get no results, newer builds of `tb` will tell you when matching mail exists outside the requested date window.
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb find --profile <profile> --account <account@example.org> --since 2026-01-01 --raw "keyword"
    ```

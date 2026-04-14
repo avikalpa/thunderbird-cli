@@ -797,6 +797,21 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		return err
 	}
 	if len(hits) == 0 {
+		if !since.IsZero() || !till.IsZero() {
+			fallbackHits, fallbackErr := store.Search(ctx, queryOptions{
+				query:      query,
+				account:    accountEmail,
+				folderLike: folderLike,
+				limit:      3,
+				profile:    profile.Name,
+			})
+			if fallbackErr == nil && len(fallbackHits) > 0 {
+				fmt.Println("No matches in the requested date range.")
+				fmt.Printf("Found %d matching message(s) outside the date filter. Newest match: %s | %s | %s\n", len(fallbackHits), fallbackHits[0].Date, fallbackHits[0].From, fallbackHits[0].Subject)
+				fmt.Println("Tip: rerun without --since/--till or widen the date range.")
+				return nil
+			}
+		}
 		fmt.Println("No matches.")
 		return nil
 	}

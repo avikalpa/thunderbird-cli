@@ -6,7 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
-- No user-visible changes yet.
+### Search UX
+
+- `tb find` and `tb search` now tell you when a query has matches outside the requested `--since` / `--till` date window instead of only printing `No matches.`
+- this makes partial-memory lookups safer when the remembered term is right but the time filter is wrong
 
 ## [3.0.5] - 2026-04-13
 
