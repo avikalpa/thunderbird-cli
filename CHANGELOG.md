@@ -6,6 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+- No user-visible changes yet.
+
+## [3.0.7] - 2026-04-21
+
 ### Authentication checks
 
 - fixed `tb mail authcheck` for providers, especially Outlook, where IMAP header search can miss a freshly delivered message even though the message is already visible in the mailbox
