@@ -87,6 +87,7 @@ tb tail --account ops@example.org --limit 30 --raw --ignore-folder junk,trash
 tb head --account ops@example.org --limit 10 --raw
 tb read --message-id '<message-id-from-list>'
 tb find --account ops@example.org --since 2026-01-01 --raw "keyword"
+tb mail move --account ops@example.org --source-mailbox Junk --dest-mailbox INBOX --message-id '<message-id-from-list>'
 ```
 
 These are shorthands for:
@@ -146,6 +147,21 @@ What it does:
 - falls back to scanning recent mailbox headers directly when a provider's IMAP header search misses the delivered message, so placement is still provable on flaky servers such as Outlook.com
 
 If the reader account is Gmail, Yahoo, or Outlook, `tb` chooses sensible mailbox defaults automatically. Override them with `--mailboxes` when a provider files the message somewhere unusual.
+
+## Mailbox Training
+
+When a provider accepts mail but files it in Junk or Spam, use `tb mail move` against the receiving account instead of relying on ad hoc GUI dragging:
+
+```bash
+tb mail move \
+  --profile base_config \
+  --account avikalpa@outlook.com \
+  --source-mailbox Junk \
+  --dest-mailbox INBOX \
+  --message-id '<1776769582505051702.1211401@gour.top>'
+```
+
+This performs a real IMAP move on the remote mailbox and gives you a repeatable inbox-training primitive for providers such as Outlook.
 
 ## The Storage Model
 

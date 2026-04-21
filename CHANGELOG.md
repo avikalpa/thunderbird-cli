@@ -8,6 +8,13 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.0.8] - 2026-04-21
+
+### Mailbox training
+
+- added `tb mail move` to move a real remote IMAP message between folders using an exact `Message-ID` or subject match
+- this makes inbox-training workflows reproducible from the CLI, for example moving a message from Outlook `Junk` into `INBOX`
+
 ## [3.0.7] - 2026-04-21
 
 ### Authentication checks

@@ -285,6 +285,24 @@ func mailMain(args []string) {
 		if err := app.authcheck(*profileName, *from, *to, *readAs, *subject, *body, *wait, boxes); err != nil {
 			log.Fatalf("authcheck: %v", err)
 		}
+	case "move":
+		cmd := flag.NewFlagSet("move", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		account := cmd.String("account", "", "account email to operate against")
+		accountShort := cmd.String("ac", "", "alias for --account")
+		sourceMailbox := cmd.String("source-mailbox", "", "source mailbox/folder name")
+		destMailbox := cmd.String("dest-mailbox", "", "destination mailbox/folder name")
+		subject := cmd.String("subject", "", "exact subject to match")
+		messageID := cmd.String("message-id", "", "exact Message-ID to match")
+		limit := cmd.Int("limit", 1, "maximum matching messages to move")
+		cmd.Parse(args[1:])
+		acct := *account
+		if acct == "" {
+			acct = *accountShort
+		}
+		if err := app.moveMail(*profileName, acct, *sourceMailbox, *destMailbox, *subject, *messageID, *limit); err != nil {
+			log.Fatalf("move: %v", err)
+		}
 	case "fetch":
 		cmd := flag.NewFlagSet("fetch", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
@@ -346,6 +364,7 @@ func mailUsage() {
 	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
 	log.Println("  sentcheck [--from a@b] [--subject s | --message-id id] [--profile p] [--mailbox Sent] [--wait 15s] [--limit N]  verify sent mail online via IMAP")
 	log.Println("  authcheck --from a@b --to c@d [--read-as x@y] [--wait 2m] [--mailboxes m1,m2]  send a test and print authentication headers from the receiving account")
+	log.Println("  move [--profile p] --account a@b --source-mailbox Junk --dest-mailbox INBOX [--message-id <id> | --subject s] [--limit N]  move matching remote IMAP mail")
 }
 
 func newApp() *App {
