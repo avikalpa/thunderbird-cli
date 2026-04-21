@@ -98,7 +98,7 @@ func pollSentMessages(account sendAccountConfig, subject, messageID, mailbox str
 				return sentcheckResult{Mailbox: mailbox, Headers: headers}, nil
 			}
 
-			headers, err := fetchRecentSentHeaders(imapClient, mbox.Messages, section, limit)
+			headers, err := fetchRecentHeaders(imapClient, mbox.Messages, section, limit)
 			if err != nil {
 				return sentcheckResult{}, err
 			}
@@ -123,7 +123,7 @@ func pollSentMessages(account sendAccountConfig, subject, messageID, mailbox str
 	return sentcheckResult{}, fmt.Errorf("no sent message with %s found in %q within %s", matchDesc, mailbox, wait)
 }
 
-func fetchRecentSentHeaders(imapClient *client.Client, total uint32, section *imap.BodySectionName, limit int) ([]string, error) {
+func fetchRecentHeaders(imapClient *client.Client, total uint32, section *imap.BodySectionName, limit int) ([]string, error) {
 	if total == 0 {
 		return nil, nil
 	}

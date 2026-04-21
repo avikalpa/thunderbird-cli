@@ -20,6 +20,7 @@ Use this skill for local mail investigation through `/home/user/gh/thunderbird-c
 - Start on unfamiliar machines with `tb doctor`.
 - When sending mail, prefer `tb mail compose --send --open=false` over ad hoc SMTP.
 - Verify automated send in Sent/INBOX/Junk evidence, not SMTP success alone.
+- Prefer `tb mail authcheck` over hand-written IMAP polling when you need receiver-side placement or authentication evidence; it now tolerates provider IMAP search misses by scanning recent mailbox headers directly.
 
 ## Repository and build
 

@@ -6,7 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
-- No user-visible changes yet.
+### Authentication checks
+
+- fixed `tb mail authcheck` for providers, especially Outlook, where IMAP header search can miss a freshly delivered message even though the message is already visible in the mailbox
+- `authcheck` now falls back to scanning recent mailbox headers directly, so receiver-side placement and authentication evidence are still provable when server-side search is flaky
 
 ## [3.0.6] - 2026-04-14
 

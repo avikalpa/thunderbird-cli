@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -94,27 +95,56 @@ func pollAuthHeaders(account sendAccountConfig, subject string, wait time.Durati
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		for _, mailbox := range mailboxes {
-			if _, err := imapClient.Select(mailbox, true); err != nil {
+			mbox, err := imapClient.Select(mailbox, true)
+			if err != nil {
 				continue
 			}
 			crit := imap.NewSearchCriteria()
 			crit.Header.Add("Subject", subject)
 			ids, err := imapClient.Search(crit)
-			if err != nil || len(ids) == 0 {
-				continue
+			if err == nil && len(ids) > 0 {
+				seq := new(imap.SeqSet)
+				seq.AddNum(ids[len(ids)-1])
+				headers, err := fetchHeaderSection(imapClient, seq, section)
+				if err != nil {
+					return authcheckResult{}, err
+				}
+				return authcheckResult{Mailbox: mailbox, Headers: headers}, nil
 			}
-			seq := new(imap.SeqSet)
-			seq.AddNum(ids[len(ids)-1])
-			headers, err := fetchHeaderSection(imapClient, seq, section)
+
+			headers, err := fetchRecentHeaders(imapClient, mbox.Messages, section, 1)
 			if err != nil {
 				return authcheckResult{}, err
 			}
-			return authcheckResult{Mailbox: mailbox, Headers: headers}, nil
+			matched := filterAuthHeaders(headers, subject, 1)
+			if len(matched) > 0 {
+				return authcheckResult{Mailbox: mailbox, Headers: matched[0]}, nil
+			}
 		}
 		time.Sleep(10 * time.Second)
 		_ = imapClient.Noop()
 	}
 	return authcheckResult{}, fmt.Errorf("authcheck: no message with subject %q arrived within %s", subject, wait)
+}
+
+func filterAuthHeaders(headers []string, subject string, limit int) []string {
+	var matched []string
+	wantSubject := strings.TrimSpace(subject)
+	for i := len(headers) - 1; i >= 0; i-- {
+		hdr := headers[i]
+		parsed, err := mail.ReadMessage(strings.NewReader(hdr))
+		if err != nil {
+			continue
+		}
+		if wantSubject != "" && parsed.Header.Get("Subject") != wantSubject {
+			continue
+		}
+		matched = append(matched, hdr)
+		if limit > 0 && len(matched) >= limit {
+			break
+		}
+	}
+	return matched
 }
 
 func openAccountIMAP(account sendAccountConfig) (*client.Client, func(), error) {

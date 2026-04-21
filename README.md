@@ -143,6 +143,7 @@ What it does:
 - sends a real message through the sender identity already configured in Thunderbird or Betterbird
 - polls the receiving account over IMAP using the credentials or OAuth token already stored in the same profile
 - prints the delivered message's authentication headers such as `Authentication-Results`, `Received-SPF`, and `DKIM-Signature`
+- falls back to scanning recent mailbox headers directly when a provider's IMAP header search misses the delivered message, so placement is still provable on flaky servers such as Outlook.com
 
 If the reader account is Gmail, Yahoo, or Outlook, `tb` chooses sensible mailbox defaults automatically. Override them with `--mailboxes` when a provider files the message somewhere unusual.
 
