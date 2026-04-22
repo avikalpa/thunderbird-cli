@@ -765,7 +765,6 @@ func matchMessage(summary MailSummary, bodyText, queryLower, messageID string) b
 }
 
 func (a *App) search(query, profileName, folderLike, accountEmail string, limit int, raw bool, since, till time.Time, refresh bool, fullRescan bool, fuzzy bool) error {
-	_ = fuzzy // currently token AND matching in the configured cache backend
 	profile, err := a.resolveProfile(profileName)
 	if err != nil {
 		return err
@@ -782,13 +781,13 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		log.Printf("info: full rescan requested for profile %s", profile.Name)
 	}
 
-	var needInitialIngest bool
-	if n, err := store.CountMessages(ctx, profile.Name); err == nil && n == 0 {
-		needInitialIngest = true
-		fullRescan = true
+	cacheCount, countErr := store.CountMessages(ctx, profile.Name)
+	if countErr == nil && cacheCount == 0 && !refresh && !fullRescan {
+		log.Printf("info: cache empty for profile %s, scanning mailbox files directly", profile.Name)
+		return a.searchDirect(profile, query, folderLike, accountEmail, limit, raw, since, till, fuzzy)
 	}
 
-	if refresh || needInitialIngest {
+	if refresh || fullRescan {
 		log.Printf("info: refreshing cache from profile %s", profile.Name)
 		if err := a.ingestProfile(ctx, store, profile, ingestOptions{
 			accountEmail: accountEmail,
@@ -813,7 +812,8 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		profile:    profile.Name,
 	})
 	if err != nil {
-		return err
+		log.Printf("warn: search store failed, scanning mailbox files directly: %v", err)
+		return a.searchDirect(profile, query, folderLike, accountEmail, limit, raw, since, till, fuzzy)
 	}
 	if len(hits) == 0 {
 		if !since.IsZero() || !till.IsZero() {
@@ -835,6 +835,47 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		return nil
 	}
 	return printHits(hits, limit, raw)
+}
+
+func (a *App) searchDirect(profile Profile, query, folderLike, accountEmail string, limit int, raw bool, since, till time.Time, fuzzy bool) error {
+	boxes, dirToAccount, err := a.searchBoxes(profile, folderLike, accountEmail)
+	if err != nil {
+		return err
+	}
+	hits, err := directSearchMailboxes(profile.Name, boxes, dirToAccount, query, limit, since, till, fuzzy)
+	if err != nil {
+		return err
+	}
+	if len(hits) == 0 {
+		if !since.IsZero() || !till.IsZero() {
+			fallbackHits, fallbackErr := directSearchMailboxes(profile.Name, boxes, dirToAccount, query, 3, time.Time{}, time.Time{}, fuzzy)
+			if fallbackErr == nil && len(fallbackHits) > 0 {
+				fmt.Println("No matches in the requested date range.")
+				fmt.Printf("Found %d matching message(s) outside the date filter. Newest match: %s | %s | %s\n", len(fallbackHits), fallbackHits[0].Date, fallbackHits[0].From, fallbackHits[0].Subject)
+				fmt.Println("Tip: rerun without --since/--till or widen the date range.")
+				return nil
+			}
+		}
+		fmt.Println("No matches.")
+		return nil
+	}
+	return printHits(hits, limit, raw)
+}
+
+func (a *App) searchBoxes(profile Profile, folderLike, accountEmail string) ([]Mailbox, map[string]string, error) {
+	boxes, err := a.listMailboxes(profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	dirToAccount, err := a.accountDirIndex(profile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("account index: %w", err)
+	}
+	boxes, err = filterMailboxes(boxes, folderLike, accountEmail, dirToAccount)
+	if err != nil {
+		return nil, nil, err
+	}
+	return boxes, dirToAccount, nil
 }
 
 func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Profile, opts ingestOptions) error {
@@ -1757,6 +1798,22 @@ func makeMatcher(q string, fuzzy bool) matcherFunc {
 	}
 }
 
+func makeSearchMatcher(q string, fuzzy bool) matcherFunc {
+	tokens := strings.Fields(strings.ToLower(strings.TrimSpace(q)))
+	if len(tokens) == 0 {
+		return func(string) bool { return true }
+	}
+	return func(s string) bool {
+		s = strings.ToLower(s)
+		for _, token := range tokens {
+			if !strings.Contains(s, token) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
 func decorateMessages(msgs []MailSummary, profile string, account string) {
 	for i := range msgs {
 		msgs[i].Profile = profile
@@ -1841,6 +1898,30 @@ func printHits(hits []MailSummary, limit int, raw bool) error {
 	}
 	w.Flush()
 	return nil
+}
+
+func directSearchMailboxes(profile string, boxes []Mailbox, dirToAccount map[string]string, query string, limit int, since, till time.Time, fuzzy bool) ([]MailSummary, error) {
+	candidates, err := shortlistMailboxes(query, boxes)
+	if err != nil {
+		log.Printf("warn: direct search shortlist failed, scanning all candidate mailboxes: %v", err)
+		candidates = boxes
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	match := makeSearchMatcher(query, fuzzy)
+	var hits []MailSummary
+	for _, box := range candidates {
+		account := accountForPath(box.Path, dirToAccount)
+		boxHits, err := searchMailbox(box, match, limit, since, till, 0, account, 0)
+		if err != nil {
+			log.Printf("warn: search %s: %v", box.Name, err)
+			continue
+		}
+		decorateMessages(boxHits, profile, account)
+		hits = append(hits, boxHits...)
+	}
+	return hits, nil
 }
 
 func accountForPath(path string, dirToAccount map[string]string) string {
@@ -2041,6 +2122,56 @@ func simpleWord(s string) bool {
 		}
 	}
 	return len(s) > 0
+}
+
+func shortlistMailboxes(query string, boxes []Mailbox) ([]Mailbox, error) {
+	query = strings.TrimSpace(query)
+	if query == "" || len(boxes) == 0 {
+		return boxes, nil
+	}
+	if _, err := exec.LookPath("rg"); err != nil {
+		return boxes, nil
+	}
+	args := []string{"--files-with-matches", "--no-messages"}
+	args = append(args, buildShortlistRipgrepPattern(query)...)
+	for _, box := range boxes {
+		args = append(args, box.Path)
+	}
+	cmd := exec.Command("rg", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("ripgrep shortlist: %w", err)
+	}
+	matched := map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		matched[filepath.Clean(line)] = struct{}{}
+	}
+	var filtered []Mailbox
+	for _, box := range boxes {
+		if _, ok := matched[filepath.Clean(box.Path)]; ok {
+			filtered = append(filtered, box)
+		}
+	}
+	return filtered, nil
+}
+
+func buildShortlistRipgrepPattern(q string) []string {
+	tokens := uniqueStrings(strings.Fields(strings.TrimSpace(q)))
+	if len(tokens) <= 1 {
+		return buildRipgrepPattern(q)
+	}
+	args := []string{"--fixed-strings", "--ignore-case"}
+	for _, token := range tokens {
+		args = append(args, "-e", token)
+	}
+	return args
 }
 
 func splitCSV(s string) []string {

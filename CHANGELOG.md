@@ -6,7 +6,11 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
-- No user-visible changes yet.
+### Search robustness
+
+- fixed `tb find` / `tb search` on cold caches so a first query no longer blocks behind an implicit full-profile ingest
+- when a profile has no cached messages yet, search now falls back to scanning the real mailbox files directly and returns the hit immediately
+- this keeps first-use operator lookups usable on large Betterbird or Thunderbird profiles while leaving full cache hydration as an explicit `fetch` / `--refresh` step
 
 ## [3.0.8] - 2026-04-21
 

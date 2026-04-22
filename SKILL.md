@@ -73,6 +73,7 @@ Inspect the live environment:
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb search "keyword" --profile <profile> --limit 50
    ```
+   If the cache for that profile is still empty, newer builds of `tb` fall back to a direct mailbox scan instead of silently ingesting the whole profile before returning a result.
 5. Read matching messages:
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb mail show --profile <profile> --folder INBOX --query "text" --limit 1 --thread
@@ -129,7 +130,7 @@ Preferred workflow:
    /home/user/gh/thunderbird-cli/bin/tb read --profile <profile> --message-id '<message-id-from-recent>'
    ```
 5. Only after that, narrow with cache search if you need the surrounding thread or historical context:
-   Note: if you use `--since` / `--till` and get no results, newer builds of `tb` will tell you when matching mail exists outside the requested date window.
+   Note: if you use `--since` / `--till` and get no results, newer builds of `tb` will tell you when matching mail exists outside the requested date window. If the cache is still cold, `tb find` now scans the mailbox files directly first instead of forcing a full cache build.
    ```sh
    /home/user/gh/thunderbird-cli/bin/tb find --profile <profile> --account <account@example.org> --since 2026-01-01 --raw "keyword"
    ```
@@ -151,6 +152,7 @@ That is the default investigation path for mailbox triage now. Search comes afte
 - If direct send is unavailable, `tb` falls back to isolated Betterbird automation for unsupported cases.
 - For machine-readable output, prefer `--raw` where available.
 - For mailbox triage, prefer `tb mail recent ... --raw` over guessing the right search term too early.
+- A cold-cache `tb find` result proves the message is in the local mail store now, but it does not replace `tb mail fetch` when you want repeated historical searches to stay fast.
 - SQLite is the default because it is the lowest-friction portable search backend.
 - Switch to PostgreSQL only when you actually need it.
 

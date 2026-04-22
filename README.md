@@ -77,6 +77,8 @@ That makes the tool easier to install, easier to carry to another machine, and e
 4. trigger sync through the configured mail client when needed
 5. send headlessly from profile-backed identities when the build and runtime support it
 
+Cold-start search is now part of that contract. If a profile cache is empty, `tb find` does not sit there trying to ingest the whole profile before answering. It scans the real mailbox files directly, returns the hit, and leaves full cache hydration as an explicit operator step.
+
 ## Simple Commands
 
 The `mail ...` subcommands remain the full interface, but the fast operator path is now:
@@ -125,6 +127,8 @@ That sequence is deliberate:
 - `search` comes after you know what you are really hunting
 
 If `tb` detects a Flatpak Betterbird/Thunderbird install with a real GUI session, `--sync` now reuses the already-running app instead of failing just because Betterbird is open. If there is no real GUI session, `--sync` still fails fast with a clear error instead of hanging behind GTK noise. In that case either point `THUNDERBIRD_BIN` at a native binary or skip `--sync` and inspect the already-synced local mailbox cache. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`).
+
+If you skip `fetch` on a profile that has never been indexed, `tb find` now uses a direct mailbox scan as the safety net. That is for getting the answer now. Use `tb mail fetch` or `tb mail search --refresh` when you want repeated searches to stay fast.
 
 ## Authentication Checks
 
