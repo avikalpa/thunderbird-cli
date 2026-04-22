@@ -6,6 +6,10 @@ This file is the second product surface after the README. It should tell a serio
 
 ## [Unreleased]
 
+- No user-visible changes yet.
+
+## [3.0.9] - 2026-04-22
+
 ### Search robustness
 
 - fixed `tb find` / `tb search` on cold caches so a first query no longer blocks behind an implicit full-profile ingest
