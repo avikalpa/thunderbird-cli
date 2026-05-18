@@ -4,6 +4,7 @@
 - Safety: treat Thunderbird data as read-only. `tb` does not rewrite live mbox, `.msf`, Thunderbird SQLite files, or `prefs.js` during normal search work.
 - Writes go to the configured cache backend, temporary isolated send-profile clones when fallback send is needed, and the optional legacy `.tb-index.json` only if `tb mail index` is used.
 - Default backend: SQLite. Optional backend: PostgreSQL via `TB_STORE=postgres` and `TB_PG_DSN=...`.
+- Profile discovery prefers `THUNDERBIRD_HOME`, then Flatpak Betterbird/Thunderbird profile roots, then `~/.thunderbird`.
 - First command on an unfamiliar machine: `tb doctor`.
 - First command before a time-sensitive hunt: `tb mail fetch --profile <p> --sync`.
 - First inspection during a time-sensitive hunt: `tb tail --profile <p> --account <acct> --limit 30 --raw --ignore-folder junk,trash`, then check `Junk Mail` separately if needed.

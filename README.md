@@ -126,7 +126,7 @@ That sequence is deliberate:
 - `show --message-id` inspects the exact mail you just found
 - `search` comes after you know what you are really hunting
 
-If `tb` detects a Flatpak Betterbird/Thunderbird install with a real GUI session, `--sync` now reuses the already-running app instead of failing just because Betterbird is open. If there is no real GUI session, `--sync` still fails fast with a clear error instead of hanging behind GTK noise. In that case either point `THUNDERBIRD_BIN` at a native binary or skip `--sync` and inspect the already-synced local mailbox cache. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`).
+If `tb` detects a Flatpak Betterbird/Thunderbird install with a real GUI session, `--sync` reuses the mail client session. If there is no real GUI session and `Xvfb` is installed, `tb` starts a temporary virtual display so Betterbird can fetch mail anyway. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`), and the standalone `tb mail sync --profile default --timeout 30s` command runs that refresh without touching the cache backend.
 
 If you skip `fetch` on a profile that has never been indexed, `tb find` now uses a direct mailbox scan as the safety net. That is for getting the answer now. Use `tb mail fetch` or `tb mail search --refresh` when you want repeated searches to stay fast.
 
@@ -417,9 +417,9 @@ Most users need none of these on day one.
 Profile discovery order:
 
 1. `THUNDERBIRD_HOME`
-2. `~/.thunderbird`
-3. `~/.var/app/eu.betterbird.Betterbird/.thunderbird`
-4. `~/.var/app/org.mozilla.Thunderbird/.thunderbird`
+2. `~/.var/app/eu.betterbird.Betterbird/.thunderbird`
+3. `~/.var/app/org.mozilla.Thunderbird/.thunderbird`
+4. `~/.thunderbird`
 
 Relevant environment variables:
 

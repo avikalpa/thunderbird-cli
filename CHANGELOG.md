@@ -8,6 +8,15 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.0.10] - 2026-05-18
+
+### Sync robustness
+
+- `tb` now prefers Flatpak Betterbird/Thunderbird profile roots before the legacy `~/.thunderbird` tree, preventing stale-host-profile reads when the active mail client is Flatpak Betterbird.
+- added `tb mail sync --profile <p> --timeout 30s` so operators and agents can refresh mail without requiring a cache fetch.
+- when `--sync` runs from a headless shell and `Xvfb` is available, `tb` starts a temporary virtual display instead of failing before Betterbird can fetch mail.
+- `tb search --refresh` now syncs the profile before refreshing the cache, keeping just-arrived mail searches from using old local state.
+
 ## [3.0.9] - 2026-04-22
 
 ### Search robustness

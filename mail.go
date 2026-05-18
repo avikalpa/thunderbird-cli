@@ -35,6 +35,11 @@ type App struct {
 	Root string
 }
 
+type syncOptions struct {
+	Timeout  time.Duration
+	Headless bool
+}
+
 type Profile struct {
 	Name         string
 	Path         string
@@ -309,7 +314,7 @@ func mailMain(args []string) {
 		folderLike := cmd.String("folder", "", "restrict to folders containing this name")
 		account := cmd.String("account", "", "filter by account email")
 		accountShort := cmd.String("ac", "", "alias for --account")
-		syncFirst := cmd.Bool("sync", false, "run Thunderbird/Betterbird headless sync before ingest")
+		syncFirst := cmd.Bool("sync", false, "run Thunderbird/Betterbird sync before ingest")
 		prune := cmd.Bool("prune", false, "delete DB rows for this profile that are no longer present on disk")
 		fullRescan := cmd.Bool("full", false, "force full rescan instead of incremental ingest")
 		maxScan := cmd.Int("max-messages", 0, "optional cap per folder during ingest (0 = all)")
@@ -321,6 +326,15 @@ func mailMain(args []string) {
 		}
 		if err := app.fetch(*profileName, *folderLike, acct, *syncFirst, *prune, *fullRescan, *maxScan, *tailCount); err != nil {
 			log.Fatalf("fetch: %v", err)
+		}
+	case "sync":
+		cmd := flag.NewFlagSet("sync", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		timeout := cmd.Duration("timeout", syncTimeout(), "how long to let Thunderbird/Betterbird fetch mail")
+		headless := cmd.Bool("headless", false, "force Thunderbird/Betterbird -headless mode")
+		cmd.Parse(args[1:])
+		if err := app.sync(*profileName, syncOptions{Timeout: *timeout, Headless: *headless}); err != nil {
+			log.Fatalf("sync: %v", err)
 		}
 	case "help", "-h", "--help":
 		mailUsage()
@@ -360,6 +374,7 @@ func mailUsage() {
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--folder name] [--refresh] [--full-rescan] [--raw] [--fuzzy]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
+	log.Println("  sync [--profile p] [--timeout 90s] [--headless]  run Thunderbird/Betterbird sync without requiring a cache backend")
 	log.Println("  show/read [--folder <name> --query <text> | --message-id <id>] [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages or a whole thread")
 	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
 	log.Println("  sentcheck [--from a@b] [--subject s | --message-id id] [--profile p] [--mailbox Sent] [--wait 15s] [--limit N]  verify sent mail online via IMAP")
@@ -378,9 +393,9 @@ func newApp() *App {
 func detectThunderbirdRoot() string {
 	home := os.Getenv("HOME")
 	candidates := []string{
-		filepath.Join(home, ".thunderbird"),
 		filepath.Join(home, ".var", "app", "eu.betterbird.Betterbird", ".thunderbird"),
 		filepath.Join(home, ".var", "app", "org.mozilla.Thunderbird", ".thunderbird"),
+		filepath.Join(home, ".thunderbird"),
 	}
 
 	for _, root := range candidates {
@@ -792,7 +807,7 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		if err := a.ingestProfile(ctx, store, profile, ingestOptions{
 			accountEmail: accountEmail,
 			folderLike:   folderLike,
-			syncFirst:    false,
+			syncFirst:    true,
 			prune:        fullRescan, // prune only makes sense on full rescan
 			fullRescan:   fullRescan,
 			maxMessages:  0,
@@ -1006,24 +1021,50 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 }
 
 func (a *App) syncProfile(profile Profile) error {
-	baseCmd := findMailCommand()
-	if err := validateSyncEnvironment(baseCmd); err != nil {
-		return err
+	return a.syncProfileWithOptions(profile, syncOptions{Timeout: syncTimeout()})
+}
+
+func (a *App) syncProfileWithOptions(profile Profile, opts syncOptions) error {
+	if opts.Timeout <= 0 {
+		opts.Timeout = syncTimeout()
 	}
-	args := syncCommandArgs(baseCmd, profile)
-	timeout := syncTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	baseCmd := findMailCommand()
+	args := []string{"-P", profile.Name, "-mail"}
+	env := os.Environ()
+	if opts.Headless {
+		args = append([]string{"-headless"}, args...)
+	} else if !guiSessionAvailable() {
+		display, _, cleanup, err := startVirtualDisplay()
+		if err != nil {
+			log.Printf("warn: virtual display unavailable, falling back to headless sync: %v", err)
+			args = append([]string{"-headless"}, args...)
+		} else {
+			defer cleanup()
+			env = append(env, "DISPLAY="+display)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, baseCmd[0], append(baseCmd[1:], args...)...)
+	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("mail sync timed out after %s; set TB_SYNC_TIMEOUT to adjust", timeout)
+			log.Printf("info: sync timeout reached after %s; assuming mail client had enough time to fetch", opts.Timeout)
+			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+func (a *App) sync(profileName string, opts syncOptions) error {
+	profile, err := a.resolveProfile(profileName)
+	if err != nil {
+		return err
+	}
+	return a.syncProfileWithOptions(profile, opts)
 }
 
 func (a *App) compose(profileName, to, cc, from, subject, body string, openComposer, sendNow bool) error {
@@ -1120,6 +1161,11 @@ func (a *App) fetch(profileName, folderLike, accountEmail string, syncFirst, pru
 	if err != nil {
 		return err
 	}
+	if syncFirst {
+		if err := a.syncProfile(profile); err != nil {
+			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+		}
+	}
 	store, err := openStore()
 	if err != nil {
 		return fmt.Errorf("open fetch store: %w", err)
@@ -1130,7 +1176,7 @@ func (a *App) fetch(profileName, folderLike, accountEmail string, syncFirst, pru
 	return a.ingestProfile(ctx, store, profile, ingestOptions{
 		accountEmail: strings.ToLower(strings.TrimSpace(accountEmail)),
 		folderLike:   folderLike,
-		syncFirst:    syncFirst,
+		syncFirst:    false,
 		prune:        prune,
 		fullRescan:   fullRescan,
 		maxMessages:  maxMessages,

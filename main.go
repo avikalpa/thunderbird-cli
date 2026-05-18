@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 func main() {
 	log.SetFlags(0)
+	loadDotenv()
 	if len(os.Args) < 2 {
 		usage()
 		return
@@ -89,4 +93,56 @@ func usage() {
 	log.Println("  tb mail search \"court order\" --limit 10")
 	log.Println("  tb mail compose --to a@b --subject \"Update\" --body \"text\" --open")
 	log.Println("  tb update --check")
+}
+
+func loadDotenv() {
+	seen := map[string]bool{}
+	var paths []string
+	add := func(path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		add(filepath.Join(wd, ".env"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		add(filepath.Join(dir, ".env"))
+		add(filepath.Join(filepath.Dir(dir), ".env"))
+	}
+	for _, path := range paths {
+		if err := loadEnvFile(path); err == nil {
+			return
+		}
+	}
+}
+
+func loadEnvFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" || os.Getenv(key) != "" {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		val = strings.Trim(val, `"'`)
+		_ = os.Setenv(key, val)
+	}
+	return scanner.Err()
 }
