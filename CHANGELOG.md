@@ -8,6 +8,66 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.4.0] - 2026-07-23
+
+Three questions that each used to take a scratch script and several calls now
+take one. The theme is the same as 3.3.0 — remove the round trips — applied to
+the parts of a lookup that were still manual: computing dates, fetching bodies,
+assembling a thread, and deciding what matters.
+
+### Relative time windows
+
+No more computing a date before you can ask a question.
+
+```sh
+tb q --today                      # everything that arrived today
+tb q "invoice" --since 7d         # 30m, 24h, 7d, 2w, 3mo, 1y
+tb q "electricity bill" --since 2019-07 --till 2019-07   # a whole month
+```
+
+`--since`/`--till` accept `YYYY-MM-DD`, `YYYY-MM`, `today`, `yesterday`, or an
+offset. `--till` is **inclusive**: `--till 2019-07` covers all of July, not
+midnight on the 1st.
+
+A query is now optional when a window is given, so `tb q --today` is a valid
+question by itself.
+
+### `--important` — what actually needs attention
+
+```sh
+tb q --today --important
+```
+
+Ranks by signals that separate mail written *to a person* from mail blasted at a
+list: `List-Id`/`List-Unsubscribe` headers, automated sender addresses, whether
+you are actually in `To`/`Cc`, whether it is a reply in a thread you are in,
+recipient-list size, deadline/money words, and folder. Every message reports
+`importance` **and `importance_why`**, so the ranking can be judged rather than
+trusted:
+
+```json
+{ "importance": 6, "importance_why": ["addressed directly to you", "reply in an existing thread"] }
+```
+
+It is a heuristic. A newsletter that sets `In-Reply-To` and omits list headers
+can still score as a conversation — which is exactly why the reasons are printed.
+
+### `--body` and `--thread` — no follow-up read
+
+```sh
+tb q "parcel signals badge" --thread --body
+```
+
+`--body` returns message bodies inline (bounded by `--body-chars`, default 4000),
+so "find it, then show me what it says" is one call instead of two. `--thread`
+expands the top hit into its whole conversation, oldest first.
+
+### Ingest captures the signals
+
+`recipients`, `list_id` and `in_reply_to` are now stored. Existing caches are
+migrated in place on first open; run `tb mail fetch --full` once to populate the
+new columns for mail already indexed.
+
 ## [3.3.1] - 2026-07-23
 
 - `tb q` reported `folders_searched: 0` when answering from the cache, because the cache query is not folder-scoped. It now reports the profile's real folder count. Understating the scope is the same defect the 3.3.0 scope block exists to prevent: it makes an empty result look like nothing was searched.

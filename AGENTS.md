@@ -10,6 +10,8 @@
 - First inspection during a time-sensitive hunt: `tb tail --profile <p> --account <acct> --limit 30 --raw --ignore-folder junk,trash`, then check `Junk Mail` separately if needed.
 - **Start with `tb q "<what you are looking for>"`.** It searches every account and folder, refreshes a stale cache, ranks by relevance, widens automatically when nothing matches, and emits JSON when piped. Reach for `search`/`find` only when you need a flag `q` does not expose.
 - Every `q` result carries a `read` field holding the exact next command. Use it verbatim rather than composing `--folder`/`--query` by hand.
+- Prefer one enriched `q` call over several plain ones: `--body` returns bodies inline (no follow-up read), `--thread` returns the whole conversation, `--important` ranks by direct/thread/deadline signals, and `--since/--till` take `today`, `7d`, `2019-07`. "What came in today?" is `tb q --today --important`.
+- `--important` is a heuristic and prints `importance_why`; quote those reasons rather than presenting the ranking as fact.
 - Preferred search output for machine consumption: `tb q ...` (JSON) or `tb search --raw ...`.
 - Preferred exact-read follow-up after recent-mail triage: `tb read --message-id '<...>'`.
 - A negative result is only evidence when the tool says what it searched. `tb` names the folders it read on an empty result and lists candidates for an unknown `--folder`; quote those in any "no such mail" conclusion.

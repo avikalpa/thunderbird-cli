@@ -68,6 +68,14 @@ type MailSummary struct {
 	Account   string
 	Search    string
 	FolderTag string
+	// Signals used to tell mail addressed to a person from bulk mail. Stored
+	// rather than scored at ingest so ranking can change without a re-ingest.
+	ImportanceScore int
+	ImportanceWhy   []string
+	Recipients      string // To + Cc, decoded
+	ListID          string // List-Id / List-Unsubscribe presence marks bulk mail
+	InReplyTo       string
+	Body            string // populated only on demand (tb q --body)
 }
 
 const (
@@ -338,41 +346,55 @@ func mailMain(args []string) {
 		account := cmd.String("account", "", "restrict to one account email")
 		accountShort := cmd.String("ac", "", "alias for --account")
 		limit := cmd.Int("limit", 10, "max results")
-		since := cmd.String("since", "", "only messages on/after YYYY-MM-DD")
-		till := cmd.String("till", "", "only messages on/before YYYY-MM-DD")
+		since := cmd.String("since", "", "YYYY-MM-DD, YYYY-MM, today, yesterday, or an offset like 7d / 24h / 3mo")
+		till := cmd.String("till", "", "upper bound, same formats as --since")
+		today := cmd.Bool("today", false, "shorthand for --since today")
 		asJSON := cmd.Bool("json", false, "force JSON output (the default when stdout is not a terminal)")
 		text := cmd.Bool("text", false, "force human-readable output")
 		includeAll := cmd.Bool("include-noise", false, "do not demote Trash/Junk copies")
 		noRefresh := cmd.Bool("no-refresh", false, "never sync/refresh; search the cache as-is")
+		withBody := cmd.Bool("body", false, "include message bodies, so no follow-up read is needed")
+		bodyChars := cmd.Int("body-chars", 4000, "max body characters per message")
+		thread := cmd.Bool("thread", false, "expand the top hit into its whole conversation, oldest first")
+		important := cmd.Bool("important", false, "rank by importance (direct/thread/deadline up, bulk down)")
 		cmd.Parse(args[1:])
-		pos := cmd.Args()
-		if len(pos) == 0 {
-			log.Fatalf("q: a query is required, e.g. tb q \"parcel signals badge\"")
+
+		now := time.Now()
+		sinceSpec := *since
+		if *today && sinceSpec == "" {
+			sinceSpec = "today"
+		}
+		sinceTime, err := parseTimeSpec(sinceSpec, now)
+		if err != nil {
+			log.Fatalf("q: --since: %v", err)
+		}
+		tillTime, err := endOfTimeSpec(*till, now)
+		if err != nil {
+			log.Fatalf("q: --till: %v", err)
 		}
 		acct := *account
 		if acct == "" {
 			acct = *accountShort
 		}
-		var sinceTime, tillTime time.Time
-		if *since != "" {
-			t, err := time.Parse("2006-01-02", *since)
-			if err != nil {
-				log.Fatalf("q: bad --since date (use YYYY-MM-DD): %v", err)
-			}
-			sinceTime = t
-		}
-		if *till != "" {
-			t, err := time.Parse("2006-01-02", *till)
-			if err != nil {
-				log.Fatalf("q: bad --till date (use YYYY-MM-DD): %v", err)
-			}
-			tillTime = t.Add(24 * time.Hour)
-		}
 		useJSON := wantJSON(*asJSON) || (!*text && !stdoutIsTerminal())
 		if *text {
 			useJSON = false
 		}
-		if err := app.agentQuery(strings.Join(pos, " "), *profileName, acct, *limit, sinceTime, tillTime, useJSON, *includeAll, *noRefresh); err != nil {
+		if err := app.agentQuery(queryRequest{
+			Query:      strings.Join(cmd.Args(), " "),
+			Profile:    *profileName,
+			Account:    acct,
+			Limit:      *limit,
+			Since:      sinceTime,
+			Till:       tillTime,
+			JSON:       useJSON,
+			IncludeAll: *includeAll,
+			NoRefresh:  *noRefresh,
+			WithBody:   *withBody,
+			BodyChars:  *bodyChars,
+			Thread:     *thread,
+			Important:  *important,
+		}); err != nil {
 			log.Fatalf("q: %v", err)
 		}
 	case "credential", "credentials":
@@ -1999,9 +2021,13 @@ func buildComposeArg(profile Profile, req composeRequest) (string, error) {
 	return strings.Join(parts, ","), nil
 }
 
+// prefsPath is the profile's prefs.js.
+func prefsPath(profile Profile) string {
+	return filepath.Join(profile.AbsolutePath, "prefs.js")
+}
+
 func composeIdentityID(profile Profile, email string) (string, error) {
-	prefsPath := filepath.Join(profile.AbsolutePath, "prefs.js")
-	prefs, err := parsePrefs(prefsPath)
+	prefs, err := parsePrefs(prefsPath(profile))
 	if err != nil {
 		return "", err
 	}
@@ -3009,15 +3035,30 @@ func parseMessage(r io.Reader, folderName string) (MailSummary, string, error) {
 	}
 	snippet := firstNonEmptyLine(bodyText)
 	searchText := strings.ToLower(strings.Join([]string{subject, from, dateHeader, bodyText}, " "))
+	to, _ := decode.DecodeHeader(msg.Header.Get("To"))
+	cc, _ := decode.DecodeHeader(msg.Header.Get("Cc"))
 	return MailSummary{
-		Folder:    folderName,
-		Subject:   strings.TrimSpace(subject),
-		From:      strings.TrimSpace(from),
-		Date:      when,
-		MessageID: msg.Header.Get("Message-Id"),
-		Snippet:   snippet,
-		When:      whenTime,
+		Folder:     folderName,
+		Subject:    strings.TrimSpace(subject),
+		From:       strings.TrimSpace(from),
+		Date:       when,
+		MessageID:  msg.Header.Get("Message-Id"),
+		Snippet:    snippet,
+		When:       whenTime,
+		Recipients: strings.TrimSpace(strings.TrimSuffix(to+", "+cc, ", ")),
+		ListID:     firstNonEmptyHeader(msg.Header, "List-Id", "List-Unsubscribe", "Precedence"),
+		InReplyTo:  strings.TrimSpace(msg.Header.Get("In-Reply-To")),
 	}, searchText, nil
+}
+
+// firstNonEmptyHeader returns the first of the named headers that is present.
+func firstNonEmptyHeader(h mail.Header, names ...string) string {
+	for _, n := range names {
+		if v := strings.TrimSpace(h.Get(n)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func parseMessageFull(r io.Reader, folderName string) (MailSummary, string, error) {

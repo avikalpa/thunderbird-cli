@@ -30,6 +30,12 @@ type messageJSON struct {
 	DateRaw   string `json:"date_raw,omitempty"`
 	Snippet   string `json:"snippet,omitempty"`
 	Profile   string `json:"profile,omitempty"`
+	// Body is present only when --body was requested.
+	Body string `json:"body,omitempty"`
+	// Importance is present only when --important was requested, with the
+	// reasons behind it so the ranking can be judged rather than trusted.
+	Importance    *int     `json:"importance,omitempty"`
+	ImportanceWhy []string `json:"importance_why,omitempty"`
 	// Read is the exact command that retrieves this message in full. Emitting
 	// it removes a whole class of malformed follow-up calls.
 	Read string `json:"read,omitempty"`
@@ -79,6 +85,12 @@ func toMessageJSON(m MailSummary) messageJSON {
 	}
 	if out.MessageID != "" {
 		out.Read = fmt.Sprintf("tb read --message-id %q", out.MessageID)
+	}
+	out.Body = m.Body
+	if len(m.ImportanceWhy) > 0 {
+		score := m.ImportanceScore
+		out.Importance = &score
+		out.ImportanceWhy = m.ImportanceWhy
 	}
 	return out
 }

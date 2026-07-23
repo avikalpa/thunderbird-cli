@@ -124,6 +124,16 @@ Piped output is JSON, and every result carries the exact command to read it:
 
 Results carry their scope (profile, account, folders searched, cache age), so an empty result is never confused with searching the wrong place. `--text` forces human output; `TB_JSON=1` forces JSON everywhere.
 
+One call, not four:
+
+```bash
+tb q --today --important                              # what actually needs attention today
+tb q "parcel signals badge" --thread --body            # the whole conversation, with bodies
+tb q "electricity bill" --since 2019-07 --till 2019-07 --body  # a specific month, amounts included
+```
+
+`--since`/`--till` take `YYYY-MM-DD`, `YYYY-MM`, `today`, `yesterday`, or an offset (`7d`, `24h`, `3mo`); `--till` is inclusive. `--important` ranks by list headers, automated senders, whether you are in `To`/`Cc`, thread membership and deadline words — and prints `importance_why` for every message so the ranking can be checked.
+
 ## Simple Commands
 
 The `mail ...` subcommands remain the full interface, but the fast operator path is now:
