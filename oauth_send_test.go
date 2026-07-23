@@ -24,7 +24,7 @@ func TestSentMailboxName(t *testing.T) {
 		t.Fatalf("sentMailboxName() = %q, want %q", got, "Sent")
 	}
 
-	got = sentMailboxName("imap://avikalpa%40gour.top@mail.gour.top/Sent%20Items")
+	got = sentMailboxName("imap://ops%40example.com@mail.example.com/Sent%20Items")
 	if got != "Sent Items" {
 		t.Fatalf("sentMailboxName() = %q, want %q", got, "Sent Items")
 	}

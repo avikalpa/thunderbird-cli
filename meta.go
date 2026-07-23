@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	version = "3.0.10"
+	version = "3.1.0"
 	commit  = "unknown"
 	builtAt = "unknown"
 )
@@ -58,8 +58,13 @@ func printFeatures() {
 	} else {
 		fmt.Println("- unavailable in this build")
 	}
+	fmt.Println("Send reporting:")
+	fmt.Println("- direct send prints the Message-ID, transport, and Sent-copy status")
+	fmt.Println("- --verify <duration> confirms the Message-ID from the server before returning")
+	fmt.Println("- reply threading via --in-reply-to / --references (direct send only)")
 	fmt.Println("Fallback send path:")
 	fmt.Println("- isolated Betterbird/Thunderbird automation via virtual display for unsupported providers")
+	fmt.Println("- cannot set In-Reply-To/References; a threaded send is refused rather than sent unthreaded")
 	fmt.Println("Backend selection:")
 	fmt.Println("- default: SQLite under XDG state (~/.local/state/thunderbird-cli/...)")
 	fmt.Println("- optional: set TB_STORE=postgres and TB_PG_DSN=... for PostgreSQL")
@@ -85,6 +90,7 @@ func runDoctor() error {
 
 	cmd := findMailCommand()
 	fmt.Printf("Mail binary: %s\n", strings.Join(cmd, " "))
+	fmt.Printf("Sync display path: %s\n", describeSyncDisplayPath(cmd))
 
 	fmt.Printf("Selected backend: %s\n", selectedStoreBackend())
 	switch selectedStoreBackend() {
@@ -129,6 +135,25 @@ func runDoctor() error {
 	}
 	fmt.Println("If direct send or cache setup is unavailable on a target machine, use `tb features` and README install notes.")
 	return nil
+}
+
+// describeSyncDisplayPath answers the question that decides whether `--sync`
+// can work at all from the current shell, so an operator learns it from
+// `tb doctor` instead of from a sync that quietly read a stale cache.
+func describeSyncDisplayPath(baseCmd []string) string {
+	if guiSessionAvailable() {
+		return "this shell already has a GUI session"
+	}
+	if session, ok := detectRunningMailSession(); ok {
+		return fmt.Sprintf("no display in this shell; will join the %s (%s)", session.Source, session.display())
+	}
+	if _, err := exec.LookPath("Xvfb"); err == nil {
+		return "no display and no running mail client; will start a temporary Xvfb display"
+	}
+	if mailCommandUsesFlatpak(baseCmd) {
+		return "BLOCKED: Flatpak mail client, no GUI session, nothing running to join, and no Xvfb — start the mail client on the desktop, set THUNDERBIRD_BIN, or install Xvfb"
+	}
+	return "no display and no Xvfb; will fall back to -headless"
 }
 
 func detectNSSRuntime() (bool, string) {

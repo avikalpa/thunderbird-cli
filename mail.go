@@ -28,6 +28,7 @@ import (
 	"golang.org/x/net/html/charset"
 	"regexp"
 	"text/tabwriter"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -146,14 +147,15 @@ func mailMain(args []string) {
 		syncFirst := cmd.Bool("sync", false, "run Thunderbird/Betterbird sync before reading the mailbox tail")
 		cmd.Parse(args[1:])
 		pos := cmd.Args()
-		if len(pos) < 1 {
-			log.Fatalf("recent: folder name required (e.g. Inbox)")
+		folder := ""
+		if len(pos) > 0 {
+			folder = pos[0]
 		}
 		acct := *account
 		if acct == "" {
 			acct = *accountShort
 		}
-		if err := app.recent(pos[0], *profileName, acct, *limit, *query, *raw, *syncFirst); err != nil {
+		if err := app.recent(folder, *profileName, acct, *limit, *query, *raw, *syncFirst); err != nil {
 			log.Fatalf("recent: %v", err)
 		}
 	case "unified":
@@ -243,8 +245,12 @@ func mailMain(args []string) {
 		from := cmd.String("from", "", "sender email/identity")
 		subject := cmd.String("subject", "", "subject")
 		body := cmd.String("body", "", "body text")
+		bodyFile := cmd.String("body-file", "", "read the body from this file ('-' reads stdin); avoids shell quoting for long messages")
+		inReplyTo := cmd.String("in-reply-to", "", "Message-ID this message replies to; sets In-Reply-To (and References if unset)")
+		references := cmd.String("references", "", "comma/space separated Message-ID chain for the References header")
 		openComposer := cmd.Bool("open", true, "open Thunderbird compose window")
 		sendNow := cmd.Bool("send", false, "auto-send headlessly via an isolated Betterbird/Thunderbird profile clone")
+		verify := cmd.Duration("verify", 0, "after --send, poll the Sent mailbox this long to confirm the Message-ID landed (0 = skip)")
 		cmd.Parse(args[1:])
 		if *to == "" {
 			log.Fatalf("compose: --to is required")
@@ -252,7 +258,27 @@ func mailMain(args []string) {
 		if !*openComposer && !*sendNow {
 			log.Fatalf("compose: nothing to do (set --open or --send)")
 		}
-		if err := app.compose(*profileName, *to, *cc, *from, *subject, *body, *openComposer, *sendNow); err != nil {
+		messageBody := *body
+		if *bodyFile != "" {
+			if *body != "" {
+				log.Fatalf("compose: use either --body or --body-file, not both")
+			}
+			loaded, err := readBodyFile(*bodyFile)
+			if err != nil {
+				log.Fatalf("compose: %v", err)
+			}
+			messageBody = loaded
+		}
+		req := composeRequest{
+			To:         *to,
+			Cc:         *cc,
+			From:       *from,
+			Subject:    *subject,
+			Body:       messageBody,
+			InReplyTo:  *inReplyTo,
+			References: *references,
+		}
+		if err := app.compose(*profileName, req, *openComposer, *sendNow, *verify); err != nil {
 			log.Fatalf("compose: %v", err)
 		}
 	case "sentcheck":
@@ -371,14 +397,14 @@ func mailUsage() {
 	log.Println("Commands:")
 	log.Println("  profiles                             list Thunderbird profiles from profiles.ini")
 	log.Println("  folders [--profile name]             list mailboxes for a profile")
-	log.Println("  recent <folder> [--profile p] [--account/--ac email] [--limit N] [--query q] [--raw] [--sync]  show newest messages from a folder before narrowing search terms")
+	log.Println("  recent [folder] [--profile p] [--account/--ac email] [--limit N] [--query q] [--raw] [--sync]  show newest messages from a folder (defaults to the inbox) before narrowing search terms")
 	log.Println("  unified [--profile p] [--account/--ac email] [--limit N] [--query q] [--raw] [--sync] [--oldest] [--ignore-account a,b] [--ignore-folder x,y]  show a unified inbox list across accounts")
 	log.Println("  search <query> [--since/--ds YYYY-MM-DD] [--till/--dt YYYY-MM-DD] [--account/--ac email] [--folder name] [--refresh] [--full-rescan] [--raw] [--fuzzy]")
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
 	log.Println("  sync [--profile p] [--timeout 90s] [--headless]  run Thunderbird/Betterbird sync without requiring a cache backend")
 	log.Println("  show/read [--folder <name> --query <text> | --message-id <id>] [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages or a whole thread")
-	log.Println("  compose/send --to ...                open/send via Thunderbird composer")
+	log.Println("  compose/send --to ... [--from a@b] [--subject s] [--body t | --body-file f] [--in-reply-to <id>] [--references <ids>] [--send --open=false] [--verify 30s]  open or headlessly send mail")
 	log.Println("  sentcheck [--from a@b] [--subject s | --message-id id] [--profile p] [--mailbox Sent] [--wait 15s] [--limit N]  verify sent mail online via IMAP")
 	log.Println("  authcheck --from a@b --to c@d [--read-as x@y] [--wait 2m] [--mailboxes m1,m2]  send a test and print authentication headers from the receiving account")
 	log.Println("  move [--profile p] --account a@b --source-mailbox Junk --dest-mailbox INBOX [--message-id <id> | --subject s] [--limit N]  move matching remote IMAP mail")
@@ -465,8 +491,11 @@ func (a *App) recent(folder, profileName, accountEmail string, limit int, query 
 	}
 	accountEmail = strings.ToLower(strings.TrimSpace(accountEmail))
 	if syncFirst {
+		// --sync was asked for explicitly. Continuing on failure would answer
+		// from a stale cache while looking like fresh mail, which already
+		// produced a false "no such email" conclusion.
 		if err := a.syncProfile(profile); err != nil {
-			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+			return fmt.Errorf("sync profile %s: %w (re-run without --sync to search the existing cache)", profile.Name, err)
 		}
 	}
 	boxes, err := a.listMailboxes(profile)
@@ -481,7 +510,19 @@ func (a *App) recent(folder, profileName, accountEmail string, limit int, query 
 	if err != nil {
 		return err
 	}
+	scope := folder
+	if folder == "" {
+		// No folder given: read the inbox(es) rather than refusing. Requiring a
+		// positional folder made the most common lookup fail on first try.
+		inboxes := inboxMailboxes(boxes)
+		if len(inboxes) == 0 {
+			return fmt.Errorf("no inbox folder found; name a folder explicitly (available: %s)", describeFolders(boxes, 8))
+		}
+		boxes = inboxes
+		scope = "inbox"
+	}
 	var messages []MailSummary
+	var skips skipTracker
 	for _, box := range boxes {
 		targetAccount := accountEmail
 		if targetAccount == "" {
@@ -489,14 +530,17 @@ func (a *App) recent(folder, profileName, accountEmail string, limit int, query 
 		}
 		boxMessages, err := readMailboxRecent(box, limit, query)
 		if err != nil {
-			log.Printf("warn: recent %s: %v", box.Name, err)
+			skips.note("recent", box.Name, err)
 			continue
 		}
 		decorateMessages(boxMessages, profile.Name, targetAccount)
 		messages = append(messages, boxMessages...)
 	}
+	skips.report()
 	if len(messages) == 0 {
-		fmt.Println("No messages found.")
+		// Name the folders actually read: an empty result must never be
+		// confusable with having read the wrong mailbox.
+		fmt.Printf("No messages found in %s (%d folder(s): %s).\n", scope, len(boxes), describeFolders(boxes, 6))
 		return nil
 	}
 	sort.Slice(messages, func(i, j int) bool {
@@ -531,7 +575,7 @@ func (a *App) recent(folder, profileName, accountEmail string, limit int, query 
 		}
 		return nil
 	}
-	fmt.Printf("Recent from %s (profile %s):\n", folder, profile.Name)
+	fmt.Printf("Recent from %s (profile %s, %d folder(s)):\n", scope, profile.Name, len(boxes))
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "DATE\tACCOUNT\tFOLDER\tFROM\tSUBJECT\tSNIPPET\n")
 	fmt.Fprintf(w, "----\t-------\t------\t----\t-------\t-------\n")
@@ -561,8 +605,11 @@ func (a *App) unifiedInbox(profileName, accountEmail string, limit int, query st
 	ignoreFolders = normalizeMailFilters(ignoreFolders)
 
 	if syncFirst {
+		// --sync was asked for explicitly. Continuing on failure would answer
+		// from a stale cache while looking like fresh mail, which already
+		// produced a false "no such email" conclusion.
 		if err := a.syncProfile(profile); err != nil {
-			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+			return fmt.Errorf("sync profile %s: %w (re-run without --sync to search the existing cache)", profile.Name, err)
 		}
 	}
 
@@ -710,12 +757,128 @@ func filterMailboxes(boxes []Mailbox, folderLike, accountEmail string, dirToAcco
 		}
 	}
 	if len(filtered) == 0 {
+		// Substring matching fails on real folder names an operator half
+		// remembers: "Sent Mail" against "Sent Items", "acme inbox" against
+		// "ImapMail/mail.acme-1.example/INBOX". Fall back to requiring every token
+		// somewhere in the path before declaring the folder absent.
+		filtered = fuzzyMatchMailboxes(boxes, needle)
+	}
+	if len(filtered) == 0 {
+		scope := ""
 		if accountEmail != "" {
-			return nil, fmt.Errorf("no folders match %q in account %s", folderLike, accountEmail)
+			scope = fmt.Sprintf(" in account %s", accountEmail)
 		}
-		return nil, fmt.Errorf("no folders match %q", folderLike)
+		return nil, fmt.Errorf("no folders match %q%s; available: %s", folderLike, scope, describeFolders(boxes, 8))
 	}
 	return filtered, nil
+}
+
+// fuzzyMatchMailboxes matches a mailbox when every token of the query appears
+// somewhere in its path, in any order.
+func fuzzyMatchMailboxes(boxes []Mailbox, needle string) []Mailbox {
+	tokens := strings.FieldsFunc(needle, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(tokens) == 0 {
+		return nil
+	}
+	var filtered []Mailbox
+	for _, b := range boxes {
+		name := strings.ToLower(b.Name)
+		matchedAll := true
+		for _, token := range tokens {
+			if !strings.Contains(name, token) {
+				matchedAll = false
+				break
+			}
+		}
+		if matchedAll {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
+}
+
+// describeFolders renders a short folder list for messages that would otherwise
+// leave the operator guessing which mailboxes were involved.
+func describeFolders(boxes []Mailbox, max int) string {
+	if len(boxes) == 0 {
+		return "(none)"
+	}
+	names := make([]string, 0, len(boxes))
+	for i, b := range boxes {
+		if i >= max {
+			names = append(names, fmt.Sprintf("... (+%d more)", len(boxes)-max))
+			break
+		}
+		names = append(names, b.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// skipTracker records folders that could not be read, deduplicating by folder.
+//
+// Thunderbird keeps non-mbox files (notably Yahoo's Trash) in the mail tree.
+// A single such file used to emit one "invalid mbox format" warning per record
+// — over twelve thousand lines for one folder — which trained operators to
+// ignore tb's warnings entirely. Benign format failures are now summarised
+// once; TB_VERBOSE=1 shows one line per affected folder.
+type skipTracker struct {
+	benign map[string]bool
+	warned map[string]bool
+}
+
+// note records a per-mailbox read failure. Real errors are still reported, but
+// only once per folder so a corrupt file cannot drown the output either.
+func (s *skipTracker) note(scope, name string, err error) {
+	first := !s.warned[name]
+	if s.warned == nil {
+		s.warned = map[string]bool{}
+	}
+	s.warned[name] = true
+
+	if !errors.Is(err, mbox.ErrInvalidFormat) {
+		if first {
+			log.Printf("warn: %s %s: %v", scope, name, err)
+		}
+		return
+	}
+	if s.benign == nil {
+		s.benign = map[string]bool{}
+	}
+	s.benign[name] = true
+	if verboseEnabled() && first {
+		log.Printf("warn: %s %s: %v", scope, name, err)
+	}
+}
+
+// report prints the one-line summary that keeps suppression honest: the
+// operator still learns that folders were skipped, and how to see which.
+func (s *skipTracker) report() {
+	if len(s.benign) == 0 || verboseEnabled() {
+		return
+	}
+	log.Printf("info: skipped %d folder(s) that are not valid mbox files (set TB_VERBOSE=1 to list them)", len(s.benign))
+}
+
+func verboseEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TB_VERBOSE"))) {
+	case "", "0", "false", "no":
+		return false
+	}
+	return true
+}
+
+// inboxMailboxes keeps only inbox folders, used when a command defaults to
+// "the inbox" rather than requiring an explicit folder name.
+func inboxMailboxes(boxes []Mailbox) []Mailbox {
+	var filtered []Mailbox
+	for _, b := range boxes {
+		if isUnifiedInboxMailbox(b) {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
 }
 
 func filterUnifiedInboxMailboxes(boxes []Mailbox, dirToAccount map[string]string, ignoreAccounts []string, ignoreFolders []string) []Mailbox {
@@ -908,8 +1071,11 @@ func (a *App) searchBoxes(profile Profile, folderLike, accountEmail string) ([]M
 func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Profile, opts ingestOptions) error {
 	accountEmail := strings.ToLower(strings.TrimSpace(opts.accountEmail))
 	if opts.syncFirst {
+		// --sync was asked for explicitly. Continuing on failure would answer
+		// from a stale cache while looking like fresh mail, which already
+		// produced a false "no such email" conclusion.
 		if err := a.syncProfile(profile); err != nil {
-			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+			return fmt.Errorf("sync profile %s: %w (re-run without --sync to search the existing cache)", profile.Name, err)
 		}
 	}
 
@@ -983,6 +1149,7 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 	}
 
 	var keepIDs []string
+	var skips skipTracker
 	for _, b := range boxes {
 		fi, err := os.Stat(b.Path)
 		if err != nil {
@@ -1004,7 +1171,7 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 		}
 		msgs, err := searchMailbox(b, func(string) bool { return true }, 0, time.Time{}, time.Time{}, opts.maxMessages, targetAccount, opts.tailCount)
 		if err != nil {
-			log.Printf("warn: ingest %s: %v", b.Name, err)
+			skips.note("ingest", b.Name, err)
 			continue
 		}
 		decorateMessages(msgs, profile.Name, targetAccount)
@@ -1020,6 +1187,7 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 			log.Printf("warn: save fingerprint %s: %v", b.Name, err)
 		}
 	}
+	skips.report()
 	if opts.prune && fullRescan {
 		if err := store.PruneMissing(ctx, profile.Name, keepIDs); err != nil {
 			return err
@@ -1046,13 +1214,23 @@ func (a *App) syncProfileWithOptions(profile Profile, opts syncOptions) error {
 	if opts.Headless {
 		args = append([]string{"-headless"}, args...)
 	} else if !guiSessionAvailable() {
-		display, _, cleanup, err := startVirtualDisplay()
-		if err != nil {
-			log.Printf("warn: virtual display unavailable, falling back to headless sync: %v", err)
-			args = append([]string{"-headless"}, args...)
-		} else {
+		// Order matters. Joining the session of an already-running mail client
+		// is the only option that works for a Flatpak build, and it is what a
+		// plain ssh shell needs; Xvfb is the fallback for when nothing is
+		// running. Failing outright beats the old silent degrade to a
+		// stale-cache read that made --sync look like it had worked.
+		if session, ok := detectRunningMailSession(); ok {
+			log.Printf("info: no display in this shell; joining the %s (%s)", session.Source, session.display())
+			env = session.apply(env)
+		} else if display, _, cleanup, err := startVirtualDisplay(); err == nil {
 			defer cleanup()
 			env = append(env, "DISPLAY="+display)
+		} else if mailCommandUsesFlatpak(baseCmd) {
+			return fmt.Errorf("cannot sync: no GUI session in this shell, no running Betterbird/Thunderbird to join, and no virtual display (%w). "+
+				"Start the mail client on the desktop session, set THUNDERBIRD_BIN to a native binary, or install Xvfb", err)
+		} else {
+			log.Printf("info: no display available (%v); using -headless", err)
+			args = append([]string{"-headless"}, args...)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
@@ -1079,7 +1257,7 @@ func (a *App) sync(profileName string, opts syncOptions) error {
 	return a.syncProfileWithOptions(profile, opts)
 }
 
-func (a *App) compose(profileName, to, cc, from, subject, body string, openComposer, sendNow bool) error {
+func (a *App) compose(profileName string, req composeRequest, openComposer, sendNow bool, verifyWait time.Duration) error {
 	baseCmd := findMailCommand()
 	var (
 		profile Profile
@@ -1091,19 +1269,35 @@ func (a *App) compose(profileName, to, cc, from, subject, body string, openCompo
 			return err
 		}
 	}
-	composeArg, err := buildComposeArg(profile, to, cc, from, subject, body)
+	composeArg, err := buildComposeArg(profile, req)
 	if err != nil {
 		return err
 	}
 	if !openComposer && sendNow {
-		err := a.sendHeadlessly(profile, to, cc, from, subject, body)
+		res, err := a.sendHeadlessly(profile, req)
 		if err == nil {
-			return nil
+			reportSend(res)
+			return a.verifySend(profile, req, res, verifyWait)
 		}
 		if !errors.Is(err, errDirectSendUnsupported) {
+			// The send may still have gone out; sendHeadlessly reports the
+			// Message-ID in the error text when it did.
 			return err
 		}
-		return runIsolatedHeadlessSend(baseCmd, profile, composeArg)
+		// The isolated-profile fallback drives the GUI composer, which has no
+		// way to set In-Reply-To/References. Silently dropping them would send
+		// an unthreaded reply that looks fine locally and opens a new ticket
+		// on the receiving end, so refuse instead.
+		if req.threaded() {
+			return fmt.Errorf("direct send is unavailable for %q and the isolated-profile fallback cannot set In-Reply-To/References; "+
+				"send without threading headers or use an identity that supports direct send (see tb features)", req.From)
+		}
+		if err := runIsolatedHeadlessSend(baseCmd, profile, composeArg); err != nil {
+			return err
+		}
+		// No Message-ID is knowable here: the GUI composer minted it.
+		log.Printf("sent: via isolated profile clone (Message-ID unknown to tb); verify with: tb mail sentcheck --from %s --subject %q", req.From, req.Subject)
+		return nil
 	}
 	args := []string{"-compose", composeArg}
 	if sendNow {
@@ -1119,6 +1313,56 @@ func (a *App) compose(profileName, to, cc, from, subject, body string, openCompo
 		return cmd.Run()
 	}
 	return nil
+}
+
+// reportSend prints the proof that a send happened. Headless send used to
+// print nothing at all on success, so a caller checking a stale local Sent
+// folder could conclude "silent no-op" and re-send a message that had already
+// gone out.
+func reportSend(res sendResult) {
+	log.Printf("sent: %s -> %s", res.From, strings.Join(res.Recipients, ", "))
+	log.Printf("  message-id: %s", res.MessageID)
+	log.Printf("  transport:  %s via %s", res.Transport, res.Server)
+	if res.SentCopy != "" {
+		log.Printf("  sent copy:  %s", res.SentCopy)
+	}
+}
+
+// verifySend confirms the message from the server side rather than from the
+// local mbox cache, which lags and has already caused a duplicate send.
+func (a *App) verifySend(profile Profile, req composeRequest, res sendResult, wait time.Duration) error {
+	if wait <= 0 {
+		return nil
+	}
+	account, err := resolveSendAccount(profile, req.From)
+	if err != nil {
+		return fmt.Errorf("message sent (Message-ID %s) but verification could not resolve the account: %w", res.MessageID, err)
+	}
+	check, err := pollSentMessages(account, "", res.MessageID, "", wait, 1)
+	if err != nil {
+		return fmt.Errorf("message sent (Message-ID %s) but not confirmed in the Sent mailbox within %s: %w; "+
+			"do NOT re-send — re-check with: tb mail sentcheck --from %s --message-id %s",
+			res.MessageID, wait, err, req.From, res.MessageID)
+	}
+	log.Printf("  verified:   Message-ID present in %s", check.Mailbox)
+	return nil
+}
+
+// readBodyFile loads a message body from disk, or from stdin when path is "-".
+// Long bodies are quoting hell to pass as --body over ssh.
+func readBodyFile(path string) (string, error) {
+	if path == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("read body from stdin: %w", err)
+		}
+		return string(data), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read --body-file: %w", err)
+	}
+	return string(data), nil
 }
 
 func (a *App) loadProfiles() ([]Profile, error) {
@@ -1174,8 +1418,11 @@ func (a *App) fetch(profileName, folderLike, accountEmail string, syncFirst, pru
 		return err
 	}
 	if syncFirst {
+		// --sync was asked for explicitly. Continuing on failure would answer
+		// from a stale cache while looking like fresh mail, which already
+		// produced a false "no such email" conclusion.
 		if err := a.syncProfile(profile); err != nil {
-			log.Printf("warn: sync profile %s: %v", profile.Name, err)
+			return fmt.Errorf("sync profile %s: %w (re-run without --sync to search the existing cache)", profile.Name, err)
 		}
 	}
 	store, err := openStore()
@@ -1505,30 +1752,30 @@ func runIsolatedHeadlessSend(baseCmd []string, profile Profile, composeArg strin
 	return nil
 }
 
-func buildComposeArg(profile Profile, to, cc, from, subject, body string) (string, error) {
+func buildComposeArg(profile Profile, req composeRequest) (string, error) {
 	var parts []string
-	if profile.AbsolutePath != "" && from != "" {
-		preselectID, err := composeIdentityID(profile, from)
+	if profile.AbsolutePath != "" && req.From != "" {
+		preselectID, err := composeIdentityID(profile, req.From)
 		if err != nil {
 			return "", err
 		}
 		if preselectID != "" {
 			parts = append(parts, fmt.Sprintf("preselectid=%s", preselectID))
 		} else {
-			parts = append(parts, fmt.Sprintf("from=%s", from))
+			parts = append(parts, fmt.Sprintf("from=%s", req.From))
 		}
-	} else if from != "" {
-		parts = append(parts, fmt.Sprintf("from=%s", from))
+	} else if req.From != "" {
+		parts = append(parts, fmt.Sprintf("from=%s", req.From))
 	}
-	parts = append(parts, fmt.Sprintf("to=%s", to))
-	if cc != "" {
-		parts = append(parts, fmt.Sprintf("cc=%s", cc))
+	parts = append(parts, fmt.Sprintf("to=%s", req.To))
+	if req.Cc != "" {
+		parts = append(parts, fmt.Sprintf("cc=%s", req.Cc))
 	}
-	if subject != "" {
-		parts = append(parts, fmt.Sprintf("subject=%s", subject))
+	if req.Subject != "" {
+		parts = append(parts, fmt.Sprintf("subject=%s", req.Subject))
 	}
-	if body != "" {
-		parts = append(parts, fmt.Sprintf("body=%s", body))
+	if req.Body != "" {
+		parts = append(parts, fmt.Sprintf("body=%s", req.Body))
 	}
 	return strings.Join(parts, ","), nil
 }
@@ -2296,8 +2543,14 @@ func (a *App) showMail(profileName, folderLike, query, messageID, accountEmail s
 		return err
 	}
 
+	if folderLike != "" && len(boxes) > 1 {
+		// --folder is a substring filter, so a short name like "INBOX" fans out
+		// across every account. Say so, or the first hit looks authoritative.
+		log.Printf("info: --folder %q matched %d folders: %s", folderLike, len(boxes), describeFolders(boxes, 6))
+	}
 	queryLower := strings.ToLower(query)
 	count := 0
+	var skips skipTracker
 	var threadSubject string
 	var threadMsgs []struct {
 		summary  MailSummary
@@ -2325,7 +2578,7 @@ func (a *App) showMail(profileName, folderLike, query, messageID, accountEmail s
 				break
 			}
 			if err != nil {
-				log.Printf("warn: %s: %v", target.Name, err)
+				skips.note("show", target.Name, err)
 				continue
 			}
 			summary, bodyText, err := parseMessageFull(msgReader, target.Name)
@@ -2362,9 +2615,10 @@ func (a *App) showMail(profileName, folderLike, query, messageID, accountEmail s
 		}
 		_ = f.Close()
 	}
+	skips.report()
 	if thread {
 		if len(threadMsgs) == 0 {
-			fmt.Println("No matches.")
+			fmt.Printf("No matches in %d folder(s): %s.\n", len(boxes), describeFolders(boxes, 6))
 			return nil
 		}
 		sort.Slice(threadMsgs, func(i, j int) bool {
@@ -2381,7 +2635,7 @@ func (a *App) showMail(profileName, folderLike, query, messageID, accountEmail s
 			fmt.Println(strings.Repeat("-", 80))
 		}
 	} else if count == 0 {
-		fmt.Println("No matches.")
+		fmt.Printf("No matches in %d folder(s): %s.\n", len(boxes), describeFolders(boxes, 6))
 	}
 	return nil
 }

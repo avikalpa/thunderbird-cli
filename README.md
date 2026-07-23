@@ -79,11 +79,21 @@ That makes the tool easier to install, easier to carry to another machine, and e
 
 Cold-start search is now part of that contract. If a profile cache is empty, `tb find` does not sit there trying to ingest the whole profile before answering. It scans the real mailbox files directly, returns the hit, and leaves full cache hydration as an explicit operator step.
 
+### No Silent Success
+
+A mail tool that quietly answers from stale data is worse than one that fails, because you act on the answer. `tb` treats that as a correctness bug:
+
+- `--sync` that cannot reach a display **fails** instead of falling through to the old cache
+- empty results name the folders actually searched, so "no matches" is never confused with "wrong mailbox"
+- headless send prints the Message-ID and can confirm delivery from the server with `--verify`
+- a reply that cannot carry its threading headers is refused rather than sent unthreaded
+
 ## Simple Commands
 
 The `mail ...` subcommands remain the full interface, but the fast operator path is now:
 
 ```bash
+tb list --limit 20 --raw
 tb list INBOX --account ops@example.org --limit 20 --raw
 tb tail --account ops@example.org --limit 30 --raw --ignore-folder junk,trash
 tb head --account ops@example.org --limit 10 --raw
@@ -91,6 +101,8 @@ tb read --message-id '<message-id-from-list>'
 tb find --account ops@example.org --since 2026-01-01 --raw "keyword"
 tb mail move --account ops@example.org --source-mailbox Junk --dest-mailbox INBOX --message-id '<message-id-from-list>'
 ```
+
+`tb list` with no folder reads the inbox(es). Name a folder when you want a specific one; `--folder` also accepts a half-remembered name, so `--folder "acme sent"` resolves to `ImapMail/mail.acme-1.example/Sent Items`.
 
 These are shorthands for:
 
@@ -126,7 +138,19 @@ That sequence is deliberate:
 - `show --message-id` inspects the exact mail you just found
 - `search` comes after you know what you are really hunting
 
-If `tb` detects a Flatpak Betterbird/Thunderbird install with a real GUI session, `--sync` reuses the mail client session. If there is no real GUI session and `Xvfb` is installed, `tb` starts a temporary virtual display so Betterbird can fetch mail anyway. You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`), and the standalone `tb mail sync --profile default --timeout 30s` command runs that refresh without touching the cache backend.
+`--sync` needs a display. `tb` finds one in this order:
+
+1. the GUI session of the current shell
+2. the session of an already-running Betterbird/Thunderbird — this is what makes `--sync` work over plain ssh, and it is the only option that works for a Flatpak build
+3. a temporary `Xvfb` display
+
+If none is available, `--sync` **fails** rather than quietly answering from the stale cache. `tb doctor` reports which path applies before you start:
+
+```bash
+tb doctor | grep 'Sync display path'
+```
+
+You can cap sync duration with `TB_SYNC_TIMEOUT=30s` (default `90s`), and the standalone `tb mail sync --profile default --timeout 30s` command runs that refresh without touching the cache backend.
 
 If you skip `fetch` on a profile that has never been indexed, `tb find` now uses a direct mailbox scan as the safety net. That is for getting the answer now. Use `tb mail fetch` or `tb mail search --refresh` when you want repeated searches to stay fast.
 
@@ -136,10 +160,10 @@ When you need to prove what a receiving provider thinks about a message, use `au
 
 ```bash
 tb mail authcheck \
-  --profile base_config \
-  --from avikalpa@gour.top \
-  --to avikalpakundu@gmail.com \
-  --read-as avikalpakundu@gmail.com \
+  --profile default \
+  --from ops@example.com \
+  --to audit@example.org \
+  --read-as audit@example.org \
   --wait 5m
 ```
 
@@ -158,11 +182,11 @@ When a provider accepts mail but files it in Junk or Spam, use `tb mail move` ag
 
 ```bash
 tb mail move \
-  --profile base_config \
-  --account avikalpa@outlook.com \
+  --profile default \
+  --account ops@example.com \
   --source-mailbox Junk \
   --dest-mailbox INBOX \
-  --message-id '<1776769582505051702.1211401@gour.top>'
+  --message-id '<1776769582505051702.1211401@example.com>'
 ```
 
 This performs a real IMAP move on the remote mailbox and gives you a repeatable inbox-training primitive for providers such as Outlook.
@@ -350,6 +374,36 @@ tb mail compose \
   --send --open=false
 ```
 
+A successful send reports what it did, so you never have to guess whether it fired:
+
+```
+sent: ops@example.com -> support@example.org, audit@example.org
+  message-id: <1784801299325454332.2671297@example.com>
+  transport:  smtp+password via smtp.example.com:465
+  sent copy:  appended to Sent Items
+```
+
+### Reply Into An Existing Thread
+
+Support desks key off `In-Reply-To`/`References`. A reply without them usually opens a *new* ticket instead of appending to the open one.
+
+```bash
+tb mail compose \
+  --profile default \
+  --from ops@example.com \
+  --to support@example.org \
+  --subject "Re: Ticket 13421571" \
+  --body-file reply.txt \
+  --in-reply-to '<parent-message-id@example.org>' \
+  --send --open=false --verify 60s
+```
+
+- `--body-file` takes a path, or `-` to read stdin. Use it for anything long enough that shell quoting over ssh becomes a hazard.
+- `--verify <duration>` polls the Sent mailbox **on the server** for the Message-ID before returning. A stale local folder is not evidence of a failed send — do not re-send off a local-cache read.
+- confirm the headers landed with `tb mail sentcheck --from ops@example.com --message-id '<id-from-the-send>'`.
+
+Threading headers require a direct-send identity. The isolated-profile fallback drives the GUI composer and cannot set them, so `tb` refuses that combination rather than sending an unthreaded reply.
+
 ### Verify The Machine Before You Trust It
 
 ```bash
@@ -429,6 +483,9 @@ Relevant environment variables:
 - `THUNDERBIRD_HOME`: explicit profile root override
 - `THUNDERBIRD_BIN`: explicit Thunderbird/Betterbird binary override
 - `THUNDERBIRD_FLATPAK_ID`: explicit Flatpak app id override
+- `TB_SYNC_TIMEOUT`: how long `--sync` lets the mail client fetch (default `90s`)
+- `TB_AUTO_REFRESH_MINUTES`: refresh the cache when it is staler than this (default `10`, `0` disables)
+- `TB_VERBOSE`: `1` to list every skipped folder instead of the one-line summary
 
 ## Coding-Agent Workflows
 
@@ -521,6 +578,31 @@ Try the normal progression:
 ```bash
 tb mail fetch --profile default --sync
 tb search --profile default --refresh --raw "your query"
+```
+
+### `--sync` fails with "cannot sync: no GUI session in this shell"
+
+Expected over plain ssh when nothing is running to join. `tb` fails here on purpose: the alternative is answering from a stale cache while looking like it fetched fresh mail.
+
+Check what path is available before you start a time-sensitive hunt:
+
+```bash
+tb doctor | grep 'Sync display path'
+```
+
+Then pick one:
+
+- open Betterbird/Thunderbird on the desktop session — `tb` will join it automatically
+- point `THUNDERBIRD_BIN` at a native binary so `-headless` is usable
+- install `Xvfb` for a temporary virtual display
+- drop `--sync` and search the existing cache deliberately
+
+### A send printed nothing — did it go out?
+
+On 3.1.0 and later it prints the Message-ID, transport, and Sent-copy status. If you are unsure about an older send, **do not re-send off a local folder read** — the local mbox cache lags and has caused duplicate mail. Ask the server instead:
+
+```bash
+tb mail sentcheck --from ops@example.com --subject "the exact subject" --wait 30s
 ```
 
 ### I want PostgreSQL back

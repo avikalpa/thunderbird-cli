@@ -50,9 +50,11 @@ func (a *App) authcheck(profileName, from, to, readAs, subject, body string, wai
 	fmt.Printf("To: %s\n", to)
 	fmt.Printf("Read-As: %s\n", readAs)
 	fmt.Printf("Subject: %s\n", subject)
-	if err := a.sendHeadlessly(profile, to, "", from, subject, body); err != nil {
+	sent, err := a.sendHeadlessly(profile, composeRequest{To: to, From: from, Subject: subject, Body: body})
+	if err != nil {
 		return fmt.Errorf("authcheck send: %w", err)
 	}
+	fmt.Printf("Message-ID: %s\n", sent.MessageID)
 
 	reader, err := resolveSendAccount(profile, readAs)
 	if err != nil {
@@ -201,6 +203,10 @@ func authcheckHeaderSection() *imap.BodySectionName {
 				"To",
 				"Subject",
 				"Message-ID",
+				// Threading headers: without them a --in-reply-to send cannot
+				// be confirmed to have actually threaded.
+				"In-Reply-To",
+				"References",
 				"Date",
 				"Delivered-To",
 				"Return-Path",

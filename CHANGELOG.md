@@ -8,6 +8,81 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.1.0] - 2026-07-23
+
+This release is about a single theme: **a command must never look like it worked
+when it did not.** Every change below removes a way `tb` could return a
+confident, wrong-looking answer.
+
+### Sync no longer degrades silently
+
+- `--sync` from a plain ssh shell used to fail with `Error: no DISPLAY environment variable specified` and then quietly answer from the stale cache. `tb` now discovers the GUI session of an already-running Betterbird/Thunderbird and joins it:
+
+  ```sh
+  $ tb mail sync --profile default
+  info: no display in this shell; joining the running mail client (pid 2538978) (WAYLAND_DISPLAY=wayland-0)
+  ```
+
+- session values are validated against the host filesystem before use, so a Flatpak client's sandbox-internal `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/flatpak/bus` is dropped rather than adopted and used to launch.
+- when `--sync` genuinely cannot run, the command now fails instead of continuing against old cached mail. Drop `--sync` to search the cache on purpose.
+- `tb doctor` reports the sync display path up front, so you know before you run a hunt:
+
+  ```
+  Sync display path: no display in this shell; will join the running mail client (pid 2538978) (WAYLAND_DISPLAY=wayland-0)
+  ```
+
+### Send now proves it sent
+
+- headless send printed nothing at all on success, which made a real send indistinguishable from a no-op — and caused a duplicate mail to a support ticket. It now reports the evidence:
+
+  ```sh
+  $ tb mail compose --from ops@example.org --to support@example.com \
+      --subject "Re: Ticket 13421571" --body-file reply.txt --send --open=false --verify 60s
+  sent: ops@example.org -> support@example.com
+    message-id: <1784801299325454332.2671297@example.com>
+    transport:  smtp+password via mail.example.org:465
+    sent copy:  appended to Sent Items
+    verified:   Message-ID present in Sent Items
+  ```
+
+- `--verify <duration>` confirms the Message-ID from the **server**, not from the local mbox cache, which lags and is not evidence of a failed send.
+- when a send succeeds but a later step fails, the error now carries the Message-ID and says not to re-send.
+
+### Reply threading
+
+- added `--in-reply-to` and `--references` to `tb mail compose`. Message-IDs are accepted with or without angle brackets, comma- or space-separated; `References` is derived from `--in-reply-to` when not given explicitly.
+- the isolated-profile fallback cannot set these headers, so a threaded send through that path is **refused** rather than delivered unthreaded — an unthreaded reply silently opens a new ticket instead of appending to the existing one.
+- `tb mail sentcheck` and `tb mail authcheck` now show `In-Reply-To` and `References`, so threading can actually be confirmed.
+
+### Reading mail
+
+- `tb mail recent` / `tb list` no longer require a folder positional; with none given they read the inbox(es):
+
+  ```sh
+  tb list --limit 20 --raw
+  ```
+
+- `--folder` now falls back to token matching, so half-remembered names resolve: `--folder "acme sent"` finds `ImapMail/mail.acme-1.example/Sent Items`.
+- an unknown folder now lists what does exist instead of only saying `no folders match`.
+- empty results name the folders actually read, so "no matches" can never be confused with "searched the wrong mailbox":
+
+  ```
+  No matches in 2 folder(s): ImapMail/imap.acme.example/Sent Items, ImapMail/mail.acme-1.example/Sent Items.
+  ```
+
+- a short `--folder INBOX` fans out across every account, and `tb` now says so rather than letting the first hit look authoritative.
+- `--body-file <path>` reads a message body from a file (or `-` for stdin), so long bodies no longer have to survive shell quoting over ssh.
+
+### Quieter, more honest warnings
+
+- a single non-mbox file in the mail tree (typically Yahoo's `Trash`) emitted one `invalid mbox format` warning per record — 12,269 lines for one folder. Those are now summarised once:
+
+  ```
+  info: skipped 1 folder(s) that are not valid mbox files (set TB_VERBOSE=1 to list them)
+  ```
+
+- `TB_VERBOSE=1` lists one line per affected folder. Real errors are still reported, deduplicated per folder.
+
 ## [3.0.10] - 2026-05-18
 
 ### Sync robustness
@@ -115,7 +190,7 @@ tb mail show --profile default --message-id '<message-id-from-recent>'
 ### Headless send
 
 - added direct headless send for non-OAuth SMTP/IMAP accounts whose encrypted passwords are already stored in the Thunderbird or Betterbird profile
-- `tb mail compose --send --open=false` no longer has to fall back to GUI automation for standard password-backed accounts like `mail.gour.top`
+- `tb mail compose --send --open=false` no longer has to fall back to GUI automation for standard password-backed accounts like `mail.example.com`
 - direct send still appends the exact RFC822 message to the real Sent folder after submission
 
 ### Capability reporting and docs
@@ -252,7 +327,7 @@ These flows were exercised against live configured accounts on this machine:
 
 ```bash
 tb mail compose \
-  --profile base_config \
+  --profile default \
   --from user@gmail.com \
   --to support@example.org \
   --cc audit@example.org \

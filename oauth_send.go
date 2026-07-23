@@ -124,19 +124,51 @@ type oauthProviderConfig struct {
 	TokenEndpoint string
 }
 
-func (a *App) sendHeadlessly(profile Profile, to, cc, from, subject, body string) error {
-	account, err := resolveSendAccount(profile, from)
+// composeRequest carries everything a single outgoing message needs. It exists
+// so that adding a header (reply threading, and whatever comes next) does not
+// mean threading another positional argument through five call sites.
+type composeRequest struct {
+	To         string
+	Cc         string
+	From       string
+	Subject    string
+	Body       string
+	InReplyTo  string
+	References string
+}
+
+// threaded reports whether this message claims a place in an existing thread.
+// The isolated-profile fallback cannot honour those headers, so callers check
+// this before degrading to it.
+func (r composeRequest) threaded() bool {
+	return strings.TrimSpace(r.InReplyTo) != "" || strings.TrimSpace(r.References) != ""
+}
+
+// sendResult is the evidence that a send actually happened. Headless send used
+// to print nothing and return 0, which made a successful send indistinguishable
+// from a no-op and caused a duplicate mail to a support ticket.
+type sendResult struct {
+	MessageID  string
+	Transport  string
+	Server     string
+	From       string
+	Recipients []string
+	SentCopy   string
+}
+
+func (a *App) sendHeadlessly(profile Profile, req composeRequest) (sendResult, error) {
+	account, err := resolveSendAccount(profile, req.From)
 	if err != nil {
-		return err
+		return sendResult{}, err
 	}
 	switch directSendProvider(account) {
 	case "google", "yahoo", "microsoft":
-		return sendOAuthMessage(account, to, cc, subject, body)
+		return sendOAuthMessage(account, req)
 	}
 	if supportsPasswordDirectSend(account) {
-		return sendPasswordMessage(account, to, cc, subject, body)
+		return sendPasswordMessage(account, req)
 	}
-	return fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
+	return sendResult{}, fmt.Errorf("%w: %s", errDirectSendUnsupported, account.Identity.Email)
 }
 
 func resolveSendAccount(profile Profile, from string) (sendAccountConfig, error) {
@@ -297,28 +329,39 @@ func supportsStoredPasswordAuth(authMethod int) bool {
 	}
 }
 
-func sendPasswordMessage(account sendAccountConfig, to, cc, subject, body string) error {
-	rawMsg, recipients, err := buildOutgoingMessage(account, to, cc, subject, body)
+func sendPasswordMessage(account sendAccountConfig, req composeRequest) (sendResult, error) {
+	rawMsg, recipients, messageID, err := buildOutgoingMessage(account, req)
 	if err != nil {
-		return err
+		return sendResult{}, err
+	}
+	res := sendResult{
+		MessageID:  messageID,
+		Transport:  "smtp+password",
+		Server:     fmt.Sprintf("%s:%d", account.Outgoing.Hostname, account.Outgoing.Port),
+		From:       account.Identity.Email,
+		Recipients: recipients,
 	}
 
 	smtpUser, smtpPassword, err := loadStoredLoginCredential(account.Profile.AbsolutePath, "smtp", account.Outgoing.Hostname, account.Outgoing.Username)
 	if err != nil {
-		return err
+		return sendResult{}, err
 	}
 	if err := smtpSendPassword(account, smtpUser, smtpPassword, rawMsg, recipients); err != nil {
-		return err
+		return sendResult{}, err
 	}
 
+	// Past this point the mail IS out. Any later failure must report the
+	// Message-ID alongside the error so the caller never re-sends blind.
 	imapUser, imapPassword, err := loadStoredLoginCredential(account.Profile.AbsolutePath, "imap", account.Incoming.Hostname, account.Incoming.Username)
 	if err != nil {
-		return err
+		return res, fmt.Errorf("message sent (Message-ID %s) but reading the IMAP credential failed: %w", messageID, err)
 	}
+	sentBox := sentMailboxName(account.Identity.SentFolder)
 	if err := appendSentMessagePassword(account, imapUser, imapPassword, rawMsg); err != nil {
-		return fmt.Errorf("message sent but failed to append to %q: %w", sentMailboxName(account.Identity.SentFolder), err)
+		return res, fmt.Errorf("message sent (Message-ID %s) but failed to append to %q: %w", messageID, sentBox, err)
 	}
-	return nil
+	res.SentCopy = fmt.Sprintf("appended to %s", sentBox)
+	return res, nil
 }
 
 func loadStoredLoginCredential(profilePath, scheme, host, wantUsername string) (string, string, error) {
@@ -368,28 +411,40 @@ func loginStoreHostname(scheme, host string) string {
 	return fmt.Sprintf("%s://%s", strings.ToLower(strings.TrimSpace(scheme)), strings.ToLower(strings.TrimSpace(host)))
 }
 
-func sendOAuthMessage(account sendAccountConfig, to, cc, subject, body string) error {
+func sendOAuthMessage(account sendAccountConfig, req composeRequest) (sendResult, error) {
 	refreshToken, err := oauthRefreshToken(account)
 	if err != nil {
-		return err
+		return sendResult{}, err
 	}
 	accessToken, err := refreshAccessToken(account, refreshToken)
 	if err != nil {
-		return err
+		return sendResult{}, err
 	}
-	rawMsg, recipients, err := buildOutgoingMessage(account, to, cc, subject, body)
+	rawMsg, recipients, messageID, err := buildOutgoingMessage(account, req)
 	if err != nil {
-		return err
+		return sendResult{}, err
+	}
+	res := sendResult{
+		MessageID:  messageID,
+		Transport:  "smtp+oauth2",
+		Server:     fmt.Sprintf("%s:%d", account.Outgoing.Hostname, account.Outgoing.Port),
+		From:       account.Identity.Email,
+		Recipients: recipients,
 	}
 	if err := smtpSendXOAUTH2(account, accessToken, rawMsg, recipients); err != nil {
-		return err
+		return sendResult{}, err
 	}
+	// Past this point the mail IS out; report the Message-ID with any error.
+	sentBox := sentMailboxName(account.Identity.SentFolder)
 	if shouldAppendSentMessage(account) {
 		if err := appendSentMessage(account, accessToken, rawMsg); err != nil {
-			return fmt.Errorf("message sent but failed to append to %q: %w", sentMailboxName(account.Identity.SentFolder), err)
+			return res, fmt.Errorf("message sent (Message-ID %s) but failed to append to %q: %w", messageID, sentBox, err)
 		}
+		res.SentCopy = fmt.Sprintf("appended to %s", sentBox)
+	} else {
+		res.SentCopy = "stored server-side by the provider"
 	}
-	return nil
+	return res, nil
 }
 
 func oauthRefreshToken(account sendAccountConfig) (string, error) {
@@ -501,19 +556,19 @@ func oauthScopeForAccount(account sendAccountConfig) string {
 	return ""
 }
 
-func buildOutgoingMessage(account sendAccountConfig, to, cc, subject, body string) ([]byte, []string, error) {
-	toAddrs, err := parseAddressListCSV(to)
+func buildOutgoingMessage(account sendAccountConfig, req composeRequest) ([]byte, []string, string, error) {
+	toAddrs, err := parseAddressListCSV(req.To)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse --to: %w", err)
+		return nil, nil, "", fmt.Errorf("parse --to: %w", err)
 	}
-	ccAddrs, err := parseAddressListCSV(cc)
+	ccAddrs, err := parseAddressListCSV(req.Cc)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse --cc: %w", err)
+		return nil, nil, "", fmt.Errorf("parse --cc: %w", err)
 	}
 	fromAddr := &mail.Address{Name: account.Identity.FullName, Address: account.Identity.Email}
 	recipients := flattenAddresses(toAddrs, ccAddrs)
 	if len(recipients) == 0 {
-		return nil, nil, fmt.Errorf("no recipients specified")
+		return nil, nil, "", fmt.Errorf("no recipients specified")
 	}
 
 	var buf bytes.Buffer
@@ -527,30 +582,60 @@ func buildOutgoingMessage(account sendAccountConfig, to, cc, subject, body strin
 		buf.WriteString("\r\n")
 	}
 
+	messageID := newMessageID(account.Identity.Email)
+	inReplyTo := normalizeMessageIDList(req.InReplyTo)
+	references := normalizeMessageIDList(req.References)
+	// RFC 5322: a reply's References is the parent's References plus the
+	// parent's Message-ID. With only --in-reply-to given, the parent ID alone
+	// is the correct minimal chain, and it is what mail clients thread on.
+	if references == "" {
+		references = inReplyTo
+	}
+
 	writeHeader("Date", time.Now().Format(time.RFC1123Z))
-	writeHeader("Message-ID", newMessageID(account.Identity.Email))
+	writeHeader("Message-ID", messageID)
 	writeHeader("From", fromAddr.String())
 	writeHeader("To", joinAddressHeader(toAddrs))
 	if len(ccAddrs) > 0 {
 		writeHeader("Cc", joinAddressHeader(ccAddrs))
 	}
-	if subject != "" {
-		writeHeader("Subject", mime.QEncoding.Encode("utf-8", subject))
+	if req.Subject != "" {
+		writeHeader("Subject", mime.QEncoding.Encode("utf-8", req.Subject))
 	}
+	writeHeader("In-Reply-To", inReplyTo)
+	writeHeader("References", references)
 	writeHeader("MIME-Version", "1.0")
 	writeHeader("Content-Type", `text/plain; charset="utf-8"`)
 	writeHeader("Content-Transfer-Encoding", "quoted-printable")
 	buf.WriteString("\r\n")
 
 	qp := quotedprintable.NewWriter(&buf)
-	if _, err := qp.Write([]byte(normalizeBody(body))); err != nil {
-		return nil, nil, fmt.Errorf("encode message body: %w", err)
+	if _, err := qp.Write([]byte(normalizeBody(req.Body))); err != nil {
+		return nil, nil, "", fmt.Errorf("encode message body: %w", err)
 	}
 	if err := qp.Close(); err != nil {
-		return nil, nil, fmt.Errorf("finalize message body: %w", err)
+		return nil, nil, "", fmt.Errorf("finalize message body: %w", err)
 	}
 
-	return buf.Bytes(), recipients, nil
+	return buf.Bytes(), recipients, messageID, nil
+}
+
+// normalizeMessageIDList accepts Message-IDs however an operator pasted them —
+// comma- or space-separated, with or without angle brackets — and returns the
+// space-separated bracketed form RFC 5322 wants.
+func normalizeMessageIDList(raw string) string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	var ids []string
+	for _, field := range fields {
+		id := strings.Trim(strings.TrimSpace(field), "<>")
+		if id == "" {
+			continue
+		}
+		ids = append(ids, "<"+id+">")
+	}
+	return strings.Join(ids, " ")
 }
 
 func parseAddressListCSV(value string) ([]*mail.Address, error) {

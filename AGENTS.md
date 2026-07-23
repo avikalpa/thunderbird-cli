@@ -10,6 +10,11 @@
 - First inspection during a time-sensitive hunt: `tb tail --profile <p> --account <acct> --limit 30 --raw --ignore-folder junk,trash`, then check `Junk Mail` separately if needed.
 - Preferred search output for machine consumption: `tb search --raw ...`.
 - Preferred exact-read follow-up after recent-mail triage: `tb read --message-id '<...>'`.
+- A negative result is only evidence when the tool says what it searched. `tb` names the folders it read on an empty result and lists candidates for an unknown `--folder`; quote those in any "no such mail" conclusion.
+- `--sync` fails rather than degrading to the stale cache. Check `tb doctor`'s `Sync display path` before a time-sensitive hunt; over plain ssh `tb` joins a running Betterbird/Thunderbird session automatically.
+- Never conclude a send failed from a local Sent-folder read; the local mbox cache lags. Use `--verify` at send time or `tb mail sentcheck` afterwards. Re-sending off a stale read has already produced a duplicate to a live support ticket.
+- Replies to a ticket or thread need `--in-reply-to` (and `--references` when you have the chain). Without them the receiving desk usually opens a new ticket.
+- Use `--body-file` for anything longer than a line; `--body` over ssh is quoting hell.
 - Preferred narrowing dimensions: `--account`, `--since`, `--till`. Use `--folder` only when it materially reduces noise.
 - Direct provider-aware headless send currently supports Google, Microsoft, and Yahoo identities stored in the selected Thunderbird or Betterbird profile.
 - If direct send is unavailable in the current build, `tb features` and `tb doctor` are the authority. Do not guess.
