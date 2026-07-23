@@ -8,6 +8,62 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.2.0] - 2026-07-23
+
+Incremental ingest, plus the fixes found by making a headless LXC container the
+primary mail host. Those fixes are all the same defect class as 3.1.0: a step
+that failed while reporting success.
+
+### Ingest resumes instead of re-reading
+
+mbox files grow by appending, but every ingest re-read each changed folder from
+byte zero. A 118MB INBOX that gained one message cost 118MB of parsing.
+
+`tb` now records how far it ingested and resumes there, after proving the
+previous end still lands on an mbox message separator. A rewritten or compacted
+folder fails that check and falls back to a full scan, so mail is never skipped.
+
+```
+$ tb mail fetch --account ops@example.org
+info: ingest parsed 1.0KiB of 148.1MiB (resumed where the previous ingest stopped)
+```
+
+Measured on a real 148MB account: **4.2s -> 0.021s**. `--full` and `--prune` still
+scan everything, since they rebuild the complete message set.
+
+### `--sync` no longer claims success when it changed nothing
+
+- `tb` now fingerprints the mail store before and after a sync. If nothing changed on a timeout, it **fails** with the likely cause instead of printing `assuming mail client had enough time to fetch` and returning 0.
+- when a sync completes cleanly and legitimately had nothing to fetch, it says so:
+
+  ```
+  info: sync completed without changing the mail store (no new mail, or nothing to fetch)
+  ```
+
+### Profiles are selected by path, not by name
+
+- `tb` passed `-P <name>` to the mail client. When the name does not bind — a `profiles.ini` entry whose directory is missing is enough — Thunderbird/Betterbird silently opens the graphical **"Choose User Profile"** dialog. On a headless host that dialog waits forever on an invisible display while `tb` reports success.
+- `tb` now passes `-profile <absolute path>`, which always binds. If a sync ever stalls again, the error tells you how to see the dialog it is waiting on.
+
+### Virtual displays are verified, not assumed
+
+- `startVirtualDisplay` hardcoded `:98` and treated the existence of `/tmp/.X11-unix/X98` as "Xvfb is ready". A leftover socket from a crashed Xvfb satisfied that instantly, so the mail client was handed a display number with no server behind it and died with `Exiting due to channel error`.
+- `tb` now uses `Xvfb -displayfd`, letting Xvfb pick a free display and report the number it actually bound.
+
+### Knowing which `tb` you are running
+
+- `tb doctor` now lists every `tb` binary it can find — the running one, each one on `PATH`, and the conventional install directories — with versions:
+
+  ```
+  Installed binaries: 2
+    3.2.0  /usr/local/bin/tb (on PATH)
+    3.0.10  /home/user/.local/bin/tb
+    WARNING: these copies are different versions.
+  ```
+
+- this matters because `tb update` only replaces the copy it is running from, `go build` leaves a binary in `./bin/tb`, and interactive vs. non-interactive shells often have different `PATH`s — so `ssh host 'tb ...'` and your terminal can run different builds.
+- added `scripts/install-local.sh`: builds the working tree and installs it over the canonical path (`/usr/local/bin/tb`, override with `TB_INSTALL_DIR`).
+
 ## [3.1.0] - 2026-07-23
 
 This release is about a single theme: **a command must never look like it worked

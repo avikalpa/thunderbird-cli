@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +15,7 @@ import (
 )
 
 var (
-	version = "3.1.0"
+	version = "3.2.0"
 	commit  = "unknown"
 	builtAt = "unknown"
 )
@@ -72,6 +73,8 @@ func printFeatures() {
 
 func runDoctor() error {
 	fmt.Printf("thunderbird-cli %s\n\n", version)
+
+	reportTbInstalls()
 
 	root := detectThunderbirdRoot()
 	fmt.Printf("Thunderbird root: %s\n", root)
@@ -135,6 +138,119 @@ func runDoctor() error {
 	}
 	fmt.Println("If direct send or cache setup is unavailable on a target machine, use `tb features` and README install notes.")
 	return nil
+}
+
+// tbInstall is one `tb` binary found on this machine.
+type tbInstall struct {
+	Path    string
+	Version string
+	Running bool
+	OnPath  bool
+}
+
+// findTbInstalls locates every `tb` a user could end up running: the one
+// executing now, each one on PATH (in PATH order), and the conventional install
+// directories. Interactive and non-interactive shells often have different
+// PATHs, so "which tb" genuinely differs between an operator's terminal and
+// `ssh host 'tb ...'` — this is what makes a stale copy hard to notice.
+func findTbInstalls() []tbInstall {
+	seen := map[string]*tbInstall{}
+	var order []string
+
+	add := func(path string, onPath bool) {
+		if path == "" {
+			return
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return
+		}
+		if existing, ok := seen[resolved]; ok {
+			existing.OnPath = existing.OnPath || onPath
+			return
+		}
+		seen[resolved] = &tbInstall{Path: resolved, OnPath: onPath}
+		order = append(order, resolved)
+	}
+
+	running, _ := os.Executable()
+	add(running, false)
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		add(filepath.Join(dir, "tb"), true)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".local", "bin", "tb"), false)
+	}
+	add("/usr/local/bin/tb", false)
+
+	runningResolved, _ := filepath.EvalSymlinks(running)
+	out := make([]tbInstall, 0, len(order))
+	for _, path := range order {
+		entry := seen[path]
+		entry.Running = path == runningResolved
+		entry.Version = probeTbVersion(path, entry.Running)
+		out = append(out, *entry)
+	}
+	return out
+}
+
+// probeTbVersion reads a binary's reported version. The running binary answers
+// from memory rather than by re-executing itself.
+func probeTbVersion(path string, running bool) string {
+	if running {
+		return version
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "version").Output()
+	if err != nil {
+		return "unknown"
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "thunderbird-cli"))
+}
+
+// reportTbInstalls prints the install picture and, when copies disagree, says
+// plainly which one a shell will actually pick. A stale second copy silently
+// shadowing the updated one is a real failure mode: `tb update` replaces only
+// the binary it is running from, and a repo build lands in ./bin/tb.
+func reportTbInstalls() {
+	installs := findTbInstalls()
+	if len(installs) == 0 {
+		return
+	}
+	fmt.Printf("Installed binaries: %d\n", len(installs))
+	versions := map[string]bool{}
+	for _, in := range installs {
+		markers := ""
+		if in.Running {
+			markers += " (running)"
+		}
+		if in.OnPath {
+			markers += " (on PATH)"
+		}
+		fmt.Printf("  %s  %s%s\n", in.Version, in.Path, markers)
+		versions[in.Version] = true
+	}
+	if len(versions) > 1 {
+		var first string
+		for _, in := range installs {
+			if in.OnPath {
+				first = in.Path
+				break
+			}
+		}
+		fmt.Println("  WARNING: these copies are different versions.")
+		if first != "" {
+			fmt.Printf("  A bare `tb` in this shell runs: %s\n", first)
+		}
+		fmt.Println("  Fix: keep one binary. `tb update` only replaces the copy it runs from,")
+		fmt.Println("  and a repo build lands in ./bin/tb — copy it over the installed path:")
+		fmt.Println("    sudo install -m 755 bin/tb /usr/local/bin/tb")
+	}
 }
 
 // describeSyncDisplayPath answers the question that decides whether `--sync`

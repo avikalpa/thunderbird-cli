@@ -35,6 +35,19 @@ go build -o bin/tb ./...
 ./bin/tb doctor
 ```
 
+### Keep one binary
+
+`go build` leaves a binary in `./bin/tb`, `install.sh` writes to `~/.local/bin` by default, and `tb update` replaces only the copy it is running from. Since interactive and non-interactive shells often have different `PATH`s, `ssh host 'tb ...'` and your terminal can end up running different builds.
+
+Pick one canonical path and install over it. `scripts/install-local.sh` builds the working tree and does this for you:
+
+```bash
+./scripts/install-local.sh                      # -> /usr/local/bin/tb
+TB_INSTALL_DIR=~/.local/bin ./scripts/install-local.sh
+```
+
+`/usr/local/bin` is the default because it is on the non-interactive `PATH`. `tb doctor` lists every `tb` it can find and warns when they disagree.
+
 ## Why This Exists
 
 Thunderbird and Betterbird are strong interactive mail clients. They are not strong operator CLIs.
@@ -84,9 +97,11 @@ Cold-start search is now part of that contract. If a profile cache is empty, `tb
 A mail tool that quietly answers from stale data is worse than one that fails, because you act on the answer. `tb` treats that as a correctness bug:
 
 - `--sync` that cannot reach a display **fails** instead of falling through to the old cache
+- a sync that changed nothing says so, instead of assuming it worked
 - empty results name the folders actually searched, so "no matches" is never confused with "wrong mailbox"
 - headless send prints the Message-ID and can confirm delivery from the server with `--verify`
 - a reply that cannot carry its threading headers is refused rather than sent unthreaded
+- `tb doctor` tells you which `tb` binary a shell will actually run, and warns when copies disagree
 
 ## Simple Commands
 

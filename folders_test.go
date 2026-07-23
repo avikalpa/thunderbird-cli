@@ -75,9 +75,9 @@ func TestSkipTrackerVerboseListsEachFolderOnce(t *testing.T) {
 func testMailboxes() []Mailbox {
 	names := []string{
 		"ImapMail/imap.gmail.com/INBOX",
-		"ImapMail/mail.gour-1.top/INBOX",
-		"ImapMail/mail.gour-1.top/Sent Items",
-		"ImapMail/mail.gour-1.top/Junk Mail",
+		"ImapMail/mail.acme-1.example/INBOX",
+		"ImapMail/mail.acme-1.example/Sent Items",
+		"ImapMail/mail.acme-1.example/Junk Mail",
 		"ImapMail/imap.mail.yahoo.com/Trash",
 	}
 	boxes := make([]Mailbox, 0, len(names))
@@ -90,14 +90,14 @@ func testMailboxes() []Mailbox {
 func TestFilterMailboxesFuzzyFallback(t *testing.T) {
 	t.Parallel()
 
-	// "gour sent" matches no folder as a substring, but every token appears in
-	// ImapMail/mail.gour-1.top/Sent Items.
-	got, err := filterMailboxes(testMailboxes(), "gour sent", "", nil)
+	// "acme sent" matches no folder as a substring, but every token appears in
+	// ImapMail/mail.acme-1.example/Sent Items.
+	got, err := filterMailboxes(testMailboxes(), "acme sent", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "ImapMail/mail.gour-1.top/Sent Items" {
-		t.Fatalf("fuzzy match = %v, want the gour Sent Items folder", got)
+	if len(got) != 1 || got[0].Name != "ImapMail/mail.acme-1.example/Sent Items" {
+		t.Fatalf("fuzzy match = %v, want the acme Sent Items folder", got)
 	}
 }
 
@@ -108,7 +108,7 @@ func TestFilterMailboxesPrefersSubstringOverFuzzy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "ImapMail/mail.gour-1.top/Sent Items" {
+	if len(got) != 1 || got[0].Name != "ImapMail/mail.acme-1.example/Sent Items" {
 		t.Fatalf("substring match = %v", got)
 	}
 }

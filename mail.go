@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -85,6 +86,56 @@ type ingestOptions struct {
 	maxMessages  int
 	tailCount    int
 	fullRescan   bool
+}
+
+// folderFingerprint records what tb has already ingested from a folder.
+//
+// The v2 form carries the ingested size as well as the mtime, which is what
+// makes append-only incremental ingest possible. Older v1 values ("mtime:size")
+// are treated as "unknown size" and simply force one full rescan.
+func folderFingerprint(modTime time.Time, size int64) string {
+	return fmt.Sprintf("v2|%d|%d", modTime.UnixNano(), size)
+}
+
+// fingerprintIngestedSize reports the size tb last ingested to, if known.
+func fingerprintIngestedSize(fingerprint string) (int64, bool) {
+	parts := strings.Split(fingerprint, "|")
+	if len(parts) != 3 || parts[0] != "v2" {
+		return 0, false
+	}
+	size, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || size < 0 {
+		return 0, false
+	}
+	return size, true
+}
+
+// mboxAppendOffset decides whether a folder only grew, so ingest can resume
+// from where it stopped instead of re-reading the file.
+//
+// It requires the file to be larger than last time AND the previous end to sit
+// exactly on an mbox message separator. A compacted or rewritten mbox will not
+// satisfy the second condition, and falls back to a full rescan.
+func mboxAppendOffset(path string, prevSize, currentSize int64) (int64, bool) {
+	if prevSize <= 0 || currentSize <= prevSize {
+		return 0, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	if _, err := f.Seek(prevSize, io.SeekStart); err != nil {
+		return 0, false
+	}
+	head := make([]byte, 5)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return 0, false
+	}
+	if string(head) != "From " {
+		return 0, false
+	}
+	return prevSize, true
 }
 
 func fingerprintKey(profile string, path string) string {
@@ -1150,26 +1201,52 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 
 	var keepIDs []string
 	var skips skipTracker
+	var scannedBytes, totalBytes int64
 	for _, b := range boxes {
 		fi, err := os.Stat(b.Path)
 		if err != nil {
 			log.Printf("warn: stat %s: %v", b.Name, err)
 			continue
 		}
-		fp := fmt.Sprintf("%d:%d", fi.ModTime().UnixNano(), fi.Size())
+		totalBytes += fi.Size()
+		fp := folderFingerprint(fi.ModTime(), fi.Size())
 		fpKey := fingerprintKey(profile.Name, b.Path)
-		if !fullRescan {
-			if prev, ok := fpCache[fpKey]; ok && prev == fp {
-				// Unchanged folder; skip ingest.
-				continue
-			}
+		prevFingerprint := fpCache[fpKey]
+		if !fullRescan && prevFingerprint == fp {
+			// Unchanged folder; skip ingest.
+			continue
 		}
 
 		targetAccount := accountEmail
 		if targetAccount == "" {
 			targetAccount = accountForPath(b.Path, dirToAccount)
 		}
-		msgs, err := searchMailbox(b, func(string) bool { return true }, 0, time.Time{}, time.Time{}, opts.maxMessages, targetAccount, opts.tailCount)
+
+		// Resume from the previous end when the folder only grew. A 118MB
+		// INBOX that gained 23KB of new mail costs 23KB of parsing, not 118MB.
+		// Disabled for --full/--prune, which need every message to rebuild
+		// keepIDs.
+		var msgs []MailSummary
+		offset, incremental := int64(0), false
+		if !fullRescan {
+			if prevSize, known := fingerprintIngestedSize(prevFingerprint); known {
+				offset, incremental = mboxAppendOffset(b.Path, prevSize, fi.Size())
+			}
+		}
+		if incremental {
+			msgs, err = scanMailboxFrom(b, offset, targetAccount, opts.maxMessages, opts.tailCount)
+			if err != nil {
+				// A bad offset must never mean silently missing mail.
+				log.Printf("warn: incremental ingest of %s failed (%v); falling back to a full scan", b.Name, err)
+				incremental = false
+			} else {
+				scannedBytes += fi.Size() - offset
+			}
+		}
+		if !incremental {
+			msgs, err = searchMailbox(b, func(string) bool { return true }, 0, time.Time{}, time.Time{}, opts.maxMessages, targetAccount, opts.tailCount)
+			scannedBytes += fi.Size()
+		}
 		if err != nil {
 			skips.note("ingest", b.Name, err)
 			continue
@@ -1188,6 +1265,9 @@ func (a *App) ingestProfile(ctx context.Context, store messageStore, profile Pro
 		}
 	}
 	skips.report()
+	if scannedBytes > 0 && totalBytes > scannedBytes {
+		log.Printf("info: ingest parsed %s of %s (resumed where the previous ingest stopped)", byteSize(scannedBytes), byteSize(totalBytes))
+	}
 	if opts.prune && fullRescan {
 		if err := store.PruneMissing(ctx, profile.Name, keepIDs); err != nil {
 			return err
@@ -1209,7 +1289,7 @@ func (a *App) syncProfileWithOptions(profile Profile, opts syncOptions) error {
 		opts.Timeout = syncTimeout()
 	}
 	baseCmd := findMailCommand()
-	args := []string{"-P", profile.Name, "-mail"}
+	args := append(profileSelectArgs(profile), "-mail")
 	env := os.Environ()
 	if opts.Headless {
 		args = append([]string{"-headless"}, args...)
@@ -1233,20 +1313,78 @@ func (a *App) syncProfileWithOptions(profile Profile, opts syncOptions) error {
 			args = append([]string{"-headless"}, args...)
 		}
 	}
+	// Snapshot the mail tree so a timeout can be judged on evidence instead of
+	// assumed to have worked.
+	before := mailTreeFingerprint(profile)
+
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, baseCmd[0], append(baseCmd[1:], args...)...)
 	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			log.Printf("info: sync timeout reached after %s; assuming mail client had enough time to fetch", opts.Timeout)
-			return nil
-		}
-		return err
+	runErr := cmd.Run()
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if runErr != nil && !timedOut {
+		return runErr
 	}
+
+	// A sync that touched nothing is the failure this whole release is about:
+	// it used to print "assuming mail client had enough time to fetch" and
+	// return success, so a profile that never opened (stale lock file, profile
+	// chooser waiting on an invisible display) was indistinguishable from a
+	// mailbox with no new mail.
+	after := mailTreeFingerprint(profile)
+	if before != after {
+		return nil
+	}
+	if timedOut {
+		return fmt.Errorf("sync ran for %s but did not modify the mail store — the client most likely never opened the profile. "+
+			"Check for a stale %s/lock, and run `%s -profile %s -mail` on a real display to see any dialog it is waiting on",
+			opts.Timeout, profile.AbsolutePath, baseCmd[0], profile.AbsolutePath)
+	}
+	log.Printf("info: sync completed without changing the mail store (no new mail, or nothing to fetch)")
 	return nil
+}
+
+// profileSelectArgs selects a profile by absolute path when one is known.
+//
+// `-P <name>` silently falls back to the graphical profile manager when the
+// name does not bind — which, on a headless host, means the client sits on an
+// invisible "Choose User Profile" dialog forever while tb reports success.
+// `-profile <path>` always binds.
+func profileSelectArgs(profile Profile) []string {
+	if strings.TrimSpace(profile.AbsolutePath) != "" {
+		return []string{"-profile", profile.AbsolutePath}
+	}
+	return []string{"-P", profile.Name}
+}
+
+// mailTreeFingerprint summarises the size and mtime of a profile's mail stores.
+// It is deliberately cheap: names, sizes and mtimes only, never contents.
+func mailTreeFingerprint(profile Profile) string {
+	if strings.TrimSpace(profile.AbsolutePath) == "" {
+		return ""
+	}
+	h := sha256.New()
+	for _, sub := range []string{"Mail", "ImapMail"} {
+		root := filepath.Join(profile.AbsolutePath, sub)
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			fmt.Fprintf(h, "%s|%d|%d\n", path, info.Size(), info.ModTime().UnixNano())
+			return nil
+		})
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func (a *App) sync(profileName string, opts syncOptions) error {
@@ -1304,7 +1442,7 @@ func (a *App) compose(profileName string, req composeRequest, openComposer, send
 		return fmt.Errorf("Thunderbird/Betterbird does not provide a supported CLI -send path; use --send --open=false for automated send")
 	}
 	if profileName != "" {
-		args = append([]string{"-P", profile.Name}, args...)
+		args = append(profileSelectArgs(profile), args...)
 	}
 	cmd := exec.Command(baseCmd[0], append(baseCmd[1:], args...)...)
 	cmd.Stdout = os.Stdout
@@ -1729,7 +1867,7 @@ func guiSessionAvailable() bool {
 }
 
 func syncCommandArgs(baseCmd []string, profile Profile) []string {
-	args := []string{"-P", profile.Name, "-mail"}
+	args := append(profileSelectArgs(profile), "-mail")
 	if !mailCommandUsesFlatpak(baseCmd) {
 		return append([]string{"-headless"}, args...)
 	}
@@ -1847,33 +1985,75 @@ func runAutomatedComposeSend(baseCmd []string, clonedProfile, composeArg string)
 	return nil
 }
 
+// startVirtualDisplay brings up an Xvfb server and returns its display name.
+//
+// It asks Xvfb to pick the display number itself via -displayfd rather than
+// hardcoding :98 and waiting for /tmp/.X11-unix/X98 to appear. A leftover
+// socket from a crashed Xvfb satisfies that check instantly, so tb used to hand
+// the mail client a display number with no server behind it — the client then
+// died with "Exiting due to channel error" while tb reported success.
 func startVirtualDisplay() (string, *exec.Cmd, func(), error) {
 	if _, err := exec.LookPath("Xvfb"); err != nil {
 		return "", nil, nil, fmt.Errorf("Xvfb is required for unattended compose/send: %w", err)
 	}
-	display := ":98"
-	args := []string{display, "-screen", "0", "1280x900x24"}
-	cmd := exec.Command("Xvfb", args...)
+	readFD, writeFD, err := os.Pipe()
+	if err != nil {
+		return "", nil, nil, err
+	}
+	defer readFD.Close()
+
+	// ExtraFiles[0] becomes fd 3 in the child.
+	cmd := exec.Command("Xvfb", "-displayfd", "3", "-screen", "0", "1280x900x24")
+	cmd.ExtraFiles = []*os.File{writeFD}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
+		writeFD.Close()
 		return "", nil, nil, err
 	}
+	writeFD.Close() // the child holds the only writer now
+
 	cleanup := func() {
+		if cmd.Process == nil {
+			return
+		}
 		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
 			_ = cmd.Process.Kill()
 		}
 		_, _ = cmd.Process.Wait()
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat("/tmp/.X11-unix/X98"); err == nil {
-			return display, cmd, cleanup, nil
-		}
-		time.Sleep(100 * time.Millisecond)
+
+	type result struct {
+		display string
+		err     error
 	}
-	cleanup()
-	return "", nil, nil, fmt.Errorf("timed out starting Xvfb on %s", display)
+	done := make(chan result, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, err := readFD.Read(buf)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		num := strings.TrimSpace(string(buf[:n]))
+		if num == "" {
+			done <- result{err: fmt.Errorf("Xvfb reported an empty display number")}
+			return
+		}
+		done <- result{display: ":" + num}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			cleanup()
+			return "", nil, nil, fmt.Errorf("Xvfb failed to report a display: %w", res.err)
+		}
+		return res.display, cmd, cleanup, nil
+	case <-time.After(10 * time.Second):
+		cleanup()
+		return "", nil, nil, fmt.Errorf("timed out waiting for Xvfb to report a display number")
+	}
 }
 
 func waitForComposeWindow(display string, timeout time.Duration) (string, error) {
@@ -2294,7 +2474,28 @@ func searchMailbox(box Mailbox, match matcherFunc, limit int, since, till time.T
 		return nil, err
 	}
 	defer f.Close()
-	reader := mbox.NewReader(f)
+	return scanMailboxReader(f, box, match, limit, since, till, maxMessages, accountLabel, tailCount)
+}
+
+// scanMailboxFrom reads only the messages appended after offset.
+//
+// mbox files grow by appending, so re-reading the whole file to pick up a few
+// new messages means scanning megabytes to find kilobytes. The caller is
+// responsible for proving the offset is still a valid message boundary.
+func scanMailboxFrom(box Mailbox, offset int64, accountLabel string, maxMessages, tailCount int) ([]MailSummary, error) {
+	f, err := os.Open(box.Path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return scanMailboxReader(f, box, func(string) bool { return true }, 0, time.Time{}, time.Time{}, maxMessages, accountLabel, tailCount)
+}
+
+func scanMailboxReader(r io.Reader, box Mailbox, match matcherFunc, limit int, since, till time.Time, maxMessages int, accountLabel string, tailCount int) ([]MailSummary, error) {
+	reader := mbox.NewReader(r)
 	var hits []MailSummary
 	seen := 0
 	warnCount := 0

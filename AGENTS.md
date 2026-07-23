@@ -15,6 +15,10 @@
 - Never conclude a send failed from a local Sent-folder read; the local mbox cache lags. Use `--verify` at send time or `tb mail sentcheck` afterwards. Re-sending off a stale read has already produced a duplicate to a live support ticket.
 - Replies to a ticket or thread need `--in-reply-to` (and `--references` when you have the chain). Without them the receiving desk usually opens a new ticket.
 - Use `--body-file` for anything longer than a line; `--body` over ssh is quoting hell.
+- A sync that changes nothing is reported, not assumed. If `--sync` reports it did not modify the mail store, the client most likely never opened the profile — check for a stale `<profile>/lock` and run the mail binary with `-profile <path>` on a real display to see what dialog it is waiting on.
+- Select profiles with `-profile <absolute path>`, never `-P <name>`: an unbindable name silently opens the graphical profile chooser, which on a headless host waits forever on an invisible display.
+- Ingest resumes from where it stopped when a folder only grew. `--full` and `--prune` still scan everything; use them when the cache must be authoritative.
+- Before trusting any `tb` behaviour on a machine, check `tb doctor`'s `Installed binaries:` block — a second copy on a different `PATH` entry is the usual reason a fix "did not take".
 - Preferred narrowing dimensions: `--account`, `--since`, `--till`. Use `--folder` only when it materially reduces noise.
 - Direct provider-aware headless send currently supports Google, Microsoft, and Yahoo identities stored in the selected Thunderbird or Betterbird profile.
 - If direct send is unavailable in the current build, `tb features` and `tb doctor` are the authority. Do not guess.
