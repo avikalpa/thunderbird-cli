@@ -60,6 +60,8 @@ func main() {
 	case "q", "ask":
 		// The agent-facing entry point: one high-recall search over everything.
 		mailMain(append([]string{"q"}, os.Args[2:]...))
+	case "reply":
+		mailMain(append([]string{"reply"}, os.Args[2:]...))
 	case "search":
 		// Convenience: allow `tb search ...` as shorthand for `tb mail search ...`.
 		mailMain(append([]string{"search"}, os.Args[2:]...))
@@ -79,6 +81,7 @@ func usage() {
 	log.Println("  update    update the installed binary from the latest GitHub release")
 	log.Println("  mail      work with Thunderbird profiles/mailboxes (profiles/folders/recent/search/compose)")
 	log.Println("  q         ONE high-recall search over every account and folder (JSON when piped)")
+	log.Println("  reply     reply inside the correct thread (dry run unless --send)")
 	log.Println("  list      shorthand for: tb mail recent ... (no folder = the inbox)")
 	log.Println("  tail      shorthand for: tb mail unified ...")
 	log.Println("  head      shorthand for: tb mail unified --oldest ...")

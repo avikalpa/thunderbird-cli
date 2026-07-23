@@ -8,6 +8,70 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.5.0] - 2026-07-23
+
+The closing pass: reply without hand-assembling headers, get at attachments,
+filter by sender, and stop reporting one message several times.
+
+### `tb reply` — answer in the right thread, dry run by default
+
+```sh
+tb reply "support ticket" --body-file reply.txt        # prints what it WOULD send
+tb reply "support ticket" --body-file reply.txt --send --verify 60s
+```
+
+Resolves the thread from the same query syntax as `tb q`, answers the **newest
+inbound** message (never your own last word), and derives `From` (the identity
+that received it), `Subject`, `In-Reply-To` and the full `References` chain
+itself. Replying used to be three calls and four hand-written headers, each one
+a chance to open a new ticket instead of continuing the existing one.
+
+**It prints a dry run unless `--send` is given.** Sending is irreversible and
+outward-facing; a wrong target should cost nothing.
+
+### Attachments
+
+```sh
+tb q "invoice" --attachments                            # list what is attached
+tb read --message-id '<id>' --save-attachments ./out     # extract to disk
+```
+
+For a mail store feeding document workflows the attachment often *is* the
+answer. Attachment filenames arrive from untrusted mail, so each is reduced to
+its base name, traversal is discarded, and an existing file is never clobbered.
+
+### `--from` and cross-account de-duplication
+
+- `tb q "invoice" --from billing@example.com` filters by sender directly instead
+  of hoping the full-text index happens to hit that field.
+- A message delivered to several accounts now collapses to one result carrying
+  `also_in`, rather than being reported three times.
+
+### `References` and `Reply-To` are stored
+
+They were parsed but never persisted, so a reply fell back to guessing:
+`References` collapsed to just the parent id, and `Reply-To` silently became
+`From` — which answers the wrong address for any sender that distinguishes them.
+Existing caches migrate on open; run `tb mail fetch --full` once to backfill.
+
+### Documentation
+
+- **Prerequisites are now stated up front** in `README.md`, `AGENTS.md` and
+  `SKILL.md`: an existing populated profile is always required; Linux + cgo + NSS
+  is required for direct send, credential storage, `authcheck` and `sentcheck`
+  (macOS/Windows builds read, search and cache only); a Thunderbird-family client
+  is needed for `--sync` only. `tb doctor` checks all of it live.
+- `SKILLS.md` is removed and `SKILL.md` reduced to a frontmatter entry point that
+  points at `AGENTS.md`, so there is one set of agent instructions instead of
+  three drifting copies. Absolute developer paths are purged from the repo.
+
+### Known limits (deliberately not built)
+
+- `--important` is a heuristic that ranks and never drops; it always prints
+  `importance_why`. A newsletter that sets `In-Reply-To` without list headers can
+  still score as a conversation.
+- No "since I last checked" watermark and no `--brief` output mode yet.
+
 ## [3.4.0] - 2026-07-23
 
 Three questions that each used to take a scratch script and several calls now
@@ -55,7 +119,7 @@ can still score as a conversation — which is exactly why the reasons are print
 ### `--body` and `--thread` — no follow-up read
 
 ```sh
-tb q "parcel signals badge" --thread --body
+tb q "billing dispute" --thread --body
 ```
 
 `--body` returns message bodies inline (bounded by `--body-chars`, default 4000),
@@ -81,7 +145,7 @@ and a result you can act on without a follow-up guess.
 ### `tb q` — one command instead of a decision tree
 
 ```sh
-tb q "parcel signals badge"
+tb q "billing dispute"
 ```
 
 Searches **every account and every folder** (Junk and Trash included, just ranked
@@ -106,7 +170,7 @@ human output, `TB_JSON=1` forces JSON everywhere). Every result carries the
 ```json
 {
   "message_id": "<26NPWXWGRVR_...@zendesk.example>",
-  "subject": "[Parcel] Re: Parcel Signals badge not showing up ...",
+  "subject": "Re: [Ticket 13421571] billing dispute ...",
   "folder": "ImapMail/mail.example-1.com/INBOX",
   "date": "2026-07-23T11:07:51Z",
   "read": "tb read --message-id \"<26NPWXWGRVR_...@zendesk.example>\""
@@ -192,7 +256,7 @@ scan everything, since they rebuild the complete message set.
   ```
   Installed binaries: 2
     3.2.0  /usr/local/bin/tb (on PATH)
-    3.0.10  /home/user/.local/bin/tb
+    3.0.10  ~/.local/bin/tb
     WARNING: these copies are different versions.
   ```
 

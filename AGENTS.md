@@ -1,5 +1,12 @@
 # Agent Notes
 
+## Prerequisites (checked live by `tb doctor` — trust it over this list)
+
+- **An existing, populated Thunderbird/Betterbird profile.** `tb` reads mail; it never creates accounts. Creating or editing a mailbox is a mail-server operation.
+- **Linux (x86-64/arm64) for full capability.** macOS/Windows builds read, search and cache, but **direct send, credential storage, `authcheck` and `sentcheck` are Linux+cgo+NSS only** (`libnss3`, `libnspr4`); `tb update` is unsupported on Windows. If send "is missing", check the platform before debugging the account.
+- **A Thunderbird-family client is needed for `--sync` only** — native `betterbird` or `thunderbird` on `PATH`, or the Flatpak; Betterbird recommended. Reading/searching a synced profile needs no client.
+- **`--sync` on a headless host** additionally needs a GUI session, a running client to join, or `Xvfb`.
+
 - Mission: act on Thunderbird or Betterbird mail quickly through a deterministic CLI.
 - Safety: treat Thunderbird data as read-only. `tb` does not rewrite live mbox, `.msf`, Thunderbird SQLite files, or `prefs.js` during normal search work.
 - Writes go to the configured cache backend, temporary isolated send-profile clones when fallback send is needed, and the optional legacy `.tb-index.json` only if `tb mail index` is used.
@@ -19,6 +26,9 @@
 - Never conclude a send failed from a local Sent-folder read; the local mbox cache lags. Use `--verify` at send time or `tb mail sentcheck` afterwards. Re-sending off a stale read has already produced a duplicate to a live support ticket.
 - Replies to a ticket or thread need `--in-reply-to` (and `--references` when you have the chain). Without them the receiving desk usually opens a new ticket.
 - Use `--body-file` for anything longer than a line; `--body` over ssh is quoting hell.
+- **Reply with `tb reply`, not hand-assembled headers.** It resolves the thread, answers the newest inbound message, and derives From/Subject/In-Reply-To/References itself. It **prints a dry run unless `--send`** — read that output before sending.
+- `tb q --from <addr>` filters by sender directly; `--attachments` lists what is attached; `tb read --message-id <id> --save-attachments DIR` extracts them.
+- Copies of one message across accounts collapse into a single result with `also_in`; do not report them as separate mail.
 - A sync that changes nothing is reported, not assumed. If `--sync` reports it did not modify the mail store, the client most likely never opened the profile — check for a stale `<profile>/lock` and run the mail binary with `-profile <path>` on a real display to see what dialog it is waiting on.
 - Select profiles with `-profile <absolute path>`, never `-P <name>`: an unbindable name silently opens the graphical profile chooser, which on a headless host waits forever on an invisible display.
 - Ingest resumes from where it stopped when a folder only grew. `--full` and `--prune` still scan everything; use them when the cache must be authoritative.

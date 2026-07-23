@@ -48,6 +48,20 @@ TB_INSTALL_DIR=~/.local/bin ./scripts/install-local.sh
 
 `/usr/local/bin` is the default because it is on the non-interactive `PATH`. `tb doctor` lists every `tb` it can find and warns when they disagree.
 
+## Prerequisites
+
+`tb doctor` checks every one of these on the machine in front of you; trust it over this list.
+
+| Need | Required for |
+|---|---|
+| An existing, **populated** Thunderbird/Betterbird profile | everything — `tb` reads mail, it never creates accounts |
+| **Linux** x86-64/arm64, cgo, NSS (`libnss3`, `libnspr4`) | direct send, credential storage, `authcheck`, `sentcheck` |
+| macOS / Windows build | read, search, cache only (`tb update` unsupported on Windows) |
+| A Thunderbird-family client on `PATH` (Betterbird recommended) or Flatpak | `--sync` only |
+| A GUI session, a running client to join, or `Xvfb` | `--sync` on a headless host |
+
+Reading and searching an already-synced profile need no mail client running at all.
+
 ## Why This Exists
 
 Thunderbird and Betterbird are strong interactive mail clients. They are not strong operator CLIs.
@@ -106,7 +120,7 @@ A mail tool that quietly answers from stale data is worse than one that fails, b
 ## For Coding Agents: Start With `tb q`
 
 ```bash
-tb q "parcel signals badge"
+tb q "billing dispute"
 ```
 
 One command, no decision tree. It searches every account and folder (Junk and Trash included, ranked below real mail), refreshes the cache if stale, ranks by relevance, and widens the match automatically when nothing hits — telling you which strategy worked.
@@ -116,7 +130,7 @@ Piped output is JSON, and every result carries the exact command to read it:
 ```json
 {
   "message_id": "<...@zendesk.example>",
-  "subject": "[Parcel] Re: Parcel Signals badge not showing up ...",
+  "subject": "Re: [Ticket 13421571] billing dispute ...",
   "date": "2026-07-23T11:07:51Z",
   "read": "tb read --message-id \"<...@zendesk.example>\""
 }
@@ -128,8 +142,10 @@ One call, not four:
 
 ```bash
 tb q --today --important                              # what actually needs attention today
-tb q "parcel signals badge" --thread --body            # the whole conversation, with bodies
+tb q "billing dispute" --thread --body                # the whole conversation, with bodies
 tb q "electricity bill" --since 2019-07 --till 2019-07 --body  # a specific month, amounts included
+tb q "invoice" --from billing@example.com --attachments        # by sender, with attachment names
+tb reply "support ticket" --body-file reply.txt                # dry run; add --send to deliver
 ```
 
 `--since`/`--till` take `YYYY-MM-DD`, `YYYY-MM`, `today`, `yesterday`, or an offset (`7d`, `24h`, `3mo`); `--till` is inclusive. `--important` ranks by list headers, automated senders, whether you are in `To`/`Cc`, thread membership and deadline words — and prints `importance_why` for every message so the ranking can be checked.

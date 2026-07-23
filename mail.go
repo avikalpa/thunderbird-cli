@@ -75,7 +75,13 @@ type MailSummary struct {
 	Recipients      string // To + Cc, decoded
 	ListID          string // List-Id / List-Unsubscribe presence marks bulk mail
 	InReplyTo       string
-	Body            string // populated only on demand (tb q --body)
+	References      string
+	ReplyTo         string
+	Attachments     []attachmentInfo
+	// AlsoIn lists the other folders holding the same Message-ID, so a message
+	// delivered to several accounts collapses to one result.
+	AlsoIn []string
+	Body   string // populated only on demand (tb q --body)
 }
 
 const (
@@ -353,6 +359,8 @@ func mailMain(args []string) {
 		text := cmd.Bool("text", false, "force human-readable output")
 		includeAll := cmd.Bool("include-noise", false, "do not demote Trash/Junk copies")
 		noRefresh := cmd.Bool("no-refresh", false, "never sync/refresh; search the cache as-is")
+		sender := cmd.String("from", "", "restrict to messages whose From contains this")
+		attach := cmd.Bool("attachments", false, "list each message's attachments")
 		withBody := cmd.Bool("body", false, "include message bodies, so no follow-up read is needed")
 		bodyChars := cmd.Int("body-chars", 4000, "max body characters per message")
 		thread := cmd.Bool("thread", false, "expand the top hit into its whole conversation, oldest first")
@@ -390,12 +398,38 @@ func mailMain(args []string) {
 			JSON:       useJSON,
 			IncludeAll: *includeAll,
 			NoRefresh:  *noRefresh,
+			Sender:     *sender,
+			Attach:     *attach,
 			WithBody:   *withBody,
 			BodyChars:  *bodyChars,
 			Thread:     *thread,
 			Important:  *important,
 		}); err != nil {
 			log.Fatalf("q: %v", err)
+		}
+	case "reply":
+		cmd := flag.NewFlagSet("reply", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		account := cmd.String("account", "", "restrict thread lookup to one account")
+		messageID := cmd.String("message-id", "", "reply to this exact message instead of resolving a thread")
+		from := cmd.String("from", "", "sender identity; defaults to the account that received the message")
+		body := cmd.String("body", "", "one-line reply body")
+		bodyFile := cmd.String("body-file", "", "read the reply body from this file ('-' reads stdin)")
+		send := cmd.Bool("send", false, "actually send; without this the reply is only printed")
+		verify := cmd.Duration("verify", 0, "after --send, poll the Sent mailbox this long to confirm delivery")
+		cmd.Parse(args[1:])
+		if err := app.replyToThread(replyRequest{
+			Query:     strings.Join(cmd.Args(), " "),
+			Profile:   *profileName,
+			Account:   *account,
+			MessageID: *messageID,
+			From:      *from,
+			Body:      *body,
+			BodyFile:  *bodyFile,
+			Send:      *send,
+			Verify:    *verify,
+		}); err != nil {
+			log.Fatalf("reply: %v", err)
 		}
 	case "credential", "credentials":
 		// The subcommand is read from the parsed positionals, not from
@@ -528,6 +562,7 @@ func mailMain(args []string) {
 		account := cmd.String("account", "", "filter by account email")
 		accountShort := cmd.String("ac", "", "alias for --account")
 		thread := cmd.Bool("thread", false, "if set, show entire thread (same subject) after first match")
+		saveAttach := cmd.String("save-attachments", "", "write the message's attachments into this directory")
 		cmd.Parse(args[1:])
 		if *messageID == "" && (*folderLike == "" || *query == "") {
 			log.Fatalf("show: either --message-id, or both --folder and --query, are required")
@@ -535,6 +570,12 @@ func mailMain(args []string) {
 		acct := *account
 		if acct == "" {
 			acct = *accountShort
+		}
+		if *saveAttach != "" {
+			if err := app.saveMessageAttachments(*profileName, *messageID, *folderLike, *query, acct, *saveAttach); err != nil {
+				log.Fatalf("show: %v", err)
+			}
+			return
 		}
 		if err := app.showMail(*profileName, *folderLike, *query, *messageID, acct, *limit, *thread); err != nil {
 			log.Fatalf("show: %v", err)
@@ -555,11 +596,13 @@ func mailUsage() {
 	log.Println("  index [--profile p] [--folder f] [--account/--ac email] [--tail N]   prebuild cache for faster search")
 	log.Println("  fetch [--profile p] [--sync] [--prune] [--full] [--account/--ac email] [--folder f] [--max-messages N] [--tail N]  ingest mail into the configured cache backend")
 	log.Println("  sync [--profile p] [--timeout 90s] [--headless]  run Thunderbird/Betterbird sync without requiring a cache backend")
+	log.Println("  show/read [... --save-attachments DIR]  extract attachments to disk")
 	log.Println("  show/read [--folder <name> --query <text> | --message-id <id>] [--profile p] [--account/--ac email] [--limit N] [--thread]  print full messages or a whole thread")
 	log.Println("  compose/send --to ... [--from a@b] [--subject s] [--body t | --body-file f] [--in-reply-to <id>] [--references <ids>] [--send --open=false] [--verify 30s]  open or headlessly send mail")
 	log.Println("  sentcheck [--from a@b] [--subject s | --message-id id] [--profile p] [--mailbox Sent] [--wait 15s] [--limit N]  verify sent mail online via IMAP")
 	log.Println("  authcheck --from a@b --to c@d [--read-as x@y] [--wait 2m] [--mailboxes m1,m2]  send a test and print authentication headers from the receiving account")
 	log.Println("  move [--profile p] --account a@b --source-mailbox Junk --dest-mailbox INBOX [--message-id <id> | --subject s] [--limit N]  move matching remote IMAP mail")
+	log.Println("  reply <query> | --message-id <id>  --body-file f [--from a@b] [--send] [--verify 60s]  reply in the right thread; prints a dry run unless --send")
 	log.Println("  credential set --scheme imap|smtp --host h --username u --password-stdin   store an account password in the profile (NSS-encrypted)")
 	log.Println("  credential list                      show which hosts have stored credentials (never the secrets)")
 }
@@ -3048,6 +3091,8 @@ func parseMessage(r io.Reader, folderName string) (MailSummary, string, error) {
 		Recipients: strings.TrimSpace(strings.TrimSuffix(to+", "+cc, ", ")),
 		ListID:     firstNonEmptyHeader(msg.Header, "List-Id", "List-Unsubscribe", "Precedence"),
 		InReplyTo:  strings.TrimSpace(msg.Header.Get("In-Reply-To")),
+		References: strings.TrimSpace(msg.Header.Get("References")),
+		ReplyTo:    strings.TrimSpace(msg.Header.Get("Reply-To")),
 	}, searchText, nil
 }
 

@@ -132,6 +132,12 @@ func (s *sqliteStore) migrateColumns(ctx context.Context) error {
 		"recipients":  `ALTER TABLE tb_messages ADD COLUMN recipients TEXT`,
 		"list_id":     `ALTER TABLE tb_messages ADD COLUMN list_id TEXT`,
 		"in_reply_to": `ALTER TABLE tb_messages ADD COLUMN in_reply_to TEXT`,
+		// Without these two, a reply falls back to guessing: References
+		// collapses to just the parent id, and Reply-To silently becomes From,
+		// which sends the answer to the wrong address for any sender that
+		// distinguishes them.
+		"references_hdr": `ALTER TABLE tb_messages ADD COLUMN references_hdr TEXT`,
+		"reply_to":       `ALTER TABLE tb_messages ADD COLUMN reply_to TEXT`,
 	} {
 		if have[col] {
 			continue
@@ -152,8 +158,8 @@ func (s *sqliteStore) Upsert(ctx context.Context, msgs []MailSummary) error {
 		return err
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO tb_messages (profile, message_id, folder, subject, sender, snippet, search_text, when_ts, date_str, account, recipients, list_id, in_reply_to)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tb_messages (profile, message_id, folder, subject, sender, snippet, search_text, when_ts, date_str, account, recipients, list_id, in_reply_to, references_hdr, reply_to)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(profile, message_id) DO UPDATE SET
 	folder=excluded.folder,
 	subject=excluded.subject,
@@ -165,7 +171,9 @@ ON CONFLICT(profile, message_id) DO UPDATE SET
 	account=excluded.account,
 	recipients=excluded.recipients,
 	list_id=excluded.list_id,
-	in_reply_to=excluded.in_reply_to
+	in_reply_to=excluded.in_reply_to,
+	references_hdr=excluded.references_hdr,
+	reply_to=excluded.reply_to
 `)
 	if err != nil {
 		_ = tx.Rollback()
@@ -191,6 +199,8 @@ ON CONFLICT(profile, message_id) DO UPDATE SET
 			forceUTF8(m.Recipients),
 			forceUTF8(m.ListID),
 			forceUTF8(m.InReplyTo),
+			forceUTF8(m.References),
+			forceUTF8(m.ReplyTo),
 		); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("sqlite upsert msg=%s folder=%s: %w", m.MessageID, m.Folder, err)
@@ -226,6 +236,9 @@ func (s *sqliteStore) Search(ctx context.Context, q queryOptions) ([]MailSummary
 	if q.account != "" {
 		where = append(where, fmt.Sprintf("m.account = %s", add(strings.ToLower(q.account))))
 	}
+	if q.sender != "" {
+		where = append(where, fmt.Sprintf("LOWER(m.sender) LIKE '%%' || LOWER(%s) || '%%'", add(q.sender)))
+	}
 	if q.folderLike != "" {
 		where = append(where, fmt.Sprintf("LOWER(m.folder) LIKE '%%' || LOWER(%s) || '%%'", add(q.folderLike)))
 	}
@@ -237,7 +250,8 @@ func (s *sqliteStore) Search(ctx context.Context, q queryOptions) ([]MailSummary
 	}
 	query := `
 SELECT m.profile, m.message_id, m.folder, m.subject, m.sender, m.snippet, m.search_text, m.when_ts, m.date_str, m.account,
-       COALESCE(m.recipients,''), COALESCE(m.list_id,''), COALESCE(m.in_reply_to,'')
+       COALESCE(m.recipients,''), COALESCE(m.list_id,''), COALESCE(m.in_reply_to,''),
+       COALESCE(m.references_hdr,''), COALESCE(m.reply_to,'')
 FROM tb_messages m
 `
 	if len(joins) > 0 {
@@ -266,7 +280,7 @@ FROM tb_messages m
 			whenUnix int64
 		)
 		if err := rows.Scan(&m.Profile, &m.MessageID, &m.Folder, &m.Subject, &m.From, &m.Snippet, &m.Search, &whenUnix, &m.Date, &m.Account,
-			&m.Recipients, &m.ListID, &m.InReplyTo); err != nil {
+			&m.Recipients, &m.ListID, &m.InReplyTo, &m.References, &m.ReplyTo); err != nil {
 			return nil, err
 		}
 		if whenUnix > 0 {

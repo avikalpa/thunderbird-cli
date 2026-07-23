@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/mail"
 	"os"
 	"sort"
 	"strings"
@@ -39,6 +42,8 @@ type queryRequest struct {
 	JSON       bool
 	IncludeAll bool
 	NoRefresh  bool
+	Sender     string
+	Attach     bool
 	WithBody   bool
 	BodyChars  int
 	Thread     bool
@@ -96,6 +101,7 @@ func (a *App) agentQuery(req queryRequest) error {
 		}
 		hits, sErr := store.Search(ctx, queryOptions{
 			account: accountEmail,
+			sender:  req.Sender,
 			since:   since,
 			till:    till,
 			limit:   0,
@@ -128,6 +134,7 @@ func (a *App) agentQuery(req queryRequest) error {
 		found, sErr := store.Search(ctx, queryOptions{
 			ftsExpr: s.ftsExpr,
 			account: accountEmail,
+			sender:  req.Sender,
 			since:   since,
 			till:    till,
 			limit:   limit,
@@ -152,6 +159,7 @@ func (a *App) agentQuery(req queryRequest) error {
 		found, sErr := store.Search(ctx, queryOptions{
 			ftsExpr: ftsExpression(query, "AND", true),
 			account: accountEmail,
+			sender:  req.Sender,
 			limit:   limit,
 			profile: profile.Name,
 		})
@@ -170,6 +178,12 @@ func (a *App) agentQuery(req queryRequest) error {
 func (a *App) finishQuery(profile Profile, req queryRequest, hits []MailSummary, notes []string, cacheAge, strategy string) error {
 	if !req.IncludeAll {
 		hits = demoteNoise(hits)
+	}
+	// The same message delivered to several accounts is one message.
+	before := len(hits)
+	hits = dedupeByMessageID(hits)
+	if collapsed := before - len(hits); collapsed > 0 {
+		notes = append(notes, fmt.Sprintf("collapsed %d duplicate copy(ies) across accounts (see also_in)", collapsed))
 	}
 
 	if req.Important {
@@ -194,9 +208,9 @@ func (a *App) finishQuery(profile Profile, req queryRequest, hits []MailSummary,
 		hits = hits[:req.Limit]
 	}
 
-	if req.WithBody {
-		if err := a.hydrateBodies(profile, hits, req.BodyChars); err != nil {
-			notes = append(notes, fmt.Sprintf("body hydration incomplete: %v", err))
+	if req.WithBody || req.Attach {
+		if err := a.hydrateMessages(profile, hits, req.BodyChars, req.WithBody, req.Attach); err != nil {
+			notes = append(notes, fmt.Sprintf("message hydration incomplete: %v", err))
 		}
 	}
 	if strategy != "" {
@@ -324,7 +338,7 @@ func stdoutIsTerminal() bool {
 // pure overhead because tb already knew exactly which file and message to open.
 // Bodies are read from the mailbox files, bounded by maxChars so a long thread
 // cannot blow up the response.
-func (a *App) hydrateBodies(profile Profile, hits []MailSummary, maxChars int) error {
+func (a *App) hydrateMessages(profile Profile, hits []MailSummary, maxChars int, wantBody, wantAttachments bool) error {
 	if len(hits) == 0 {
 		return nil
 	}
@@ -372,7 +386,11 @@ func (a *App) hydrateBodies(profile Profile, hits []MailSummary, maxChars int) e
 			if err != nil {
 				break
 			}
-			summary, body, err := parseMessageFull(msgReader, folder)
+			raw, err := io.ReadAll(io.LimitReader(msgReader, maxMessageBytes))
+			if err != nil {
+				continue
+			}
+			summary, body, err := parseMessageFull(bytes.NewReader(raw), folder)
 			if err != nil {
 				continue
 			}
@@ -380,7 +398,15 @@ func (a *App) hydrateBodies(profile Profile, hits []MailSummary, maxChars int) e
 			if !wanted {
 				continue
 			}
-			hits[idx].Body = truncate(strings.TrimSpace(body), maxChars)
+			if wantBody {
+				hits[idx].Body = truncate(strings.TrimSpace(body), maxChars)
+			}
+			if wantAttachments {
+				if parsed, pErr := mail.ReadMessage(bytes.NewReader(raw)); pErr == nil {
+					partBody, _ := io.ReadAll(io.LimitReader(parsed.Body, maxMessageBytes))
+					hits[idx].Attachments = listAttachments(parsed.Header, partBody)
+				}
+			}
 			remaining--
 		}
 		missing += remaining
@@ -432,4 +458,68 @@ func (a *App) expandThread(profile Profile, seed MailSummary) ([]MailSummary, er
 	}
 	sort.SliceStable(thread, func(i, j int) bool { return thread[i].When.Before(thread[j].When) })
 	return thread, nil
+}
+
+// findByMessageID resolves one message by its exact identifier, preferring the
+// cache and falling back to scanning the mail store.
+func (a *App) findByMessageID(profile Profile, id string) (MailSummary, error) {
+	id = strings.TrimSpace(id)
+	store, err := openStore()
+	if err == nil {
+		defer store.Close()
+		hits, sErr := store.Search(context.Background(), queryOptions{
+			profile: profile.Name,
+			limit:   0,
+		})
+		if sErr == nil {
+			for _, h := range hits {
+				if strings.TrimSpace(h.MessageID) == id {
+					return h, nil
+				}
+			}
+		}
+	}
+	boxes, err := a.listMailboxes(profile)
+	if err != nil {
+		return MailSummary{}, err
+	}
+	dirToAccount, _ := a.accountDirIndex(profile)
+	for _, box := range boxes {
+		msgs, err := searchMailbox(box, func(string) bool { return true }, 0, time.Time{}, time.Time{}, 0,
+			accountForPath(box.Path, dirToAccount), 0)
+		if err != nil {
+			continue
+		}
+		for _, m := range msgs {
+			if strings.TrimSpace(m.MessageID) == id {
+				return m, nil
+			}
+		}
+	}
+	return MailSummary{}, fmt.Errorf("no message with Message-ID %s in profile %s", id, profile.Name)
+}
+
+// dedupeByMessageID collapses the same message delivered to several accounts
+// into one result, recording where else it lives instead of repeating it.
+func dedupeByMessageID(hits []MailSummary) []MailSummary {
+	seen := map[string]int{}
+	var out []MailSummary
+	for _, h := range hits {
+		id := strings.TrimSpace(h.MessageID)
+		if id == "" {
+			out = append(out, h)
+			continue
+		}
+		if idx, ok := seen[id]; ok {
+			where := h.Folder
+			if h.Account != "" {
+				where = h.Account + ":" + h.Folder
+			}
+			out[idx].AlsoIn = append(out[idx].AlsoIn, where)
+			continue
+		}
+		seen[id] = len(out)
+		out = append(out, h)
+	}
+	return out
 }

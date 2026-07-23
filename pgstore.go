@@ -211,7 +211,10 @@ type queryOptions struct {
 	// ftsExpr, when set, is used verbatim as the SQLite FTS5 MATCH expression
 	// instead of deriving one from query. It lets a caller widen recall
 	// (prefix or OR matching) without the store guessing at intent.
-	ftsExpr    string
+	ftsExpr string
+	// sender narrows by From address; "who sent me X" is a top query shape and
+	// should not depend on the full-text index happening to hit that field.
+	sender     string
 	account    string
 	folderLike string
 	since      time.Time

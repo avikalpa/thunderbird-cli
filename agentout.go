@@ -32,6 +32,10 @@ type messageJSON struct {
 	Profile   string `json:"profile,omitempty"`
 	// Body is present only when --body was requested.
 	Body string `json:"body,omitempty"`
+	// Attachments is present only when --attachments was requested.
+	Attachments []attachmentInfo `json:"attachments,omitempty"`
+	// AlsoIn names the other account:folder pairs holding this same message.
+	AlsoIn []string `json:"also_in,omitempty"`
 	// Importance is present only when --important was requested, with the
 	// reasons behind it so the ranking can be judged rather than trusted.
 	Importance    *int     `json:"importance,omitempty"`
@@ -87,6 +91,8 @@ func toMessageJSON(m MailSummary) messageJSON {
 		out.Read = fmt.Sprintf("tb read --message-id %q", out.MessageID)
 	}
 	out.Body = m.Body
+	out.Attachments = m.Attachments
+	out.AlsoIn = m.AlsoIn
 	if len(m.ImportanceWhy) > 0 {
 		score := m.ImportanceScore
 		out.Importance = &score
