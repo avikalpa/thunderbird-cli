@@ -96,6 +96,8 @@ func mailMain(args []string) {
 		return
 	}
 	app := newApp()
+	// Accept flags before OR after positionals (see reorderArgs).
+	args = append([]string{args[0]}, reorderArgs(args[1:])...)
 	switch args[0] {
 	case "profiles":
 		cmd := flag.NewFlagSet("profiles", flag.ExitOnError)
@@ -796,6 +798,16 @@ func (a *App) search(query, profileName, folderLike, accountEmail string, limit 
 		log.Printf("info: full rescan requested for profile %s", profile.Name)
 	}
 
+	// Auto-refresh: pick up newly arrived mail without the caller having to
+	// remember --refresh. Window via TB_AUTO_REFRESH_MINUTES (0 disables).
+	if !refresh && !fullRescan && autoRefreshWindow() > 0 {
+		if ts, mErr := store.GetMeta(ctx, fmt.Sprintf("last_scan.%s", profile.Name)); mErr == nil && ts != "" {
+			if last, pErr := time.Parse(time.RFC3339, ts); pErr == nil && time.Since(last) > autoRefreshWindow() {
+				refresh = true
+			}
+		}
+	}
+
 	cacheCount, countErr := store.CountMessages(ctx, profile.Name)
 	if countErr == nil && cacheCount == 0 && !refresh && !fullRescan {
 		log.Printf("info: cache empty for profile %s, scanning mailbox files directly", profile.Name)
@@ -1208,10 +1220,27 @@ func (a *App) resolveProfile(name string) (Profile, error) {
 		return Profile{}, fmt.Errorf("load profiles: %w", err)
 	}
 	if name == "" {
+		// Honour the profiles.ini default only if it actually holds mail: a
+		// fresh/empty "default" profile otherwise makes every search report
+		// "No matches" while the real mail sits in another profile.
+		var richest Profile
+		var bestBytes int64
+		for _, p := range profiles {
+			if b := profileMailBytes(p); b > bestBytes {
+				bestBytes, richest = b, p
+			}
+		}
 		for _, p := range profiles {
 			if p.Default {
-				return p, nil
+				if bestBytes == 0 || profileMailBytes(p) > 0 {
+					return p, nil
+				}
+				log.Printf("info: profile %q has no mail; using %q instead", p.Name, richest.Name)
+				return richest, nil
 			}
+		}
+		if bestBytes > 0 {
+			return richest, nil
 		}
 		if len(profiles) > 0 {
 			return profiles[0], nil
