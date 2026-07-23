@@ -8,6 +8,10 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.3.1] - 2026-07-23
+
+- `tb q` reported `folders_searched: 0` when answering from the cache, because the cache query is not folder-scoped. It now reports the profile's real folder count. Understating the scope is the same defect the 3.3.0 scope block exists to prevent: it makes an empty result look like nothing was searched.
+
 ## [3.3.0] - 2026-07-23
 
 `tb`'s main consumer is a coding agent, not a person at a terminal. This release

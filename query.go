@@ -133,6 +133,12 @@ func (a *App) agentQuery(query, profileName, accountEmail string, limit int, sin
 		Account:  accountEmail,
 		CacheAge: cacheAge,
 	}
+	// Report the real folder count. The cache query is not folder-scoped, so
+	// reporting 0 here would understate the scope and make an empty result look
+	// like it had searched nothing.
+	if boxes, bErr := a.listMailboxes(profile); bErr == nil {
+		scope.Folders = len(boxes)
+	}
 	if !since.IsZero() {
 		scope.Since = since.Format("2006-01-02")
 	}
