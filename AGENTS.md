@@ -8,7 +8,9 @@
 - First command on an unfamiliar machine: `tb doctor`.
 - First command before a time-sensitive hunt: `tb mail fetch --profile <p> --sync`.
 - First inspection during a time-sensitive hunt: `tb tail --profile <p> --account <acct> --limit 30 --raw --ignore-folder junk,trash`, then check `Junk Mail` separately if needed.
-- Preferred search output for machine consumption: `tb search --raw ...`.
+- **Start with `tb q "<what you are looking for>"`.** It searches every account and folder, refreshes a stale cache, ranks by relevance, widens automatically when nothing matches, and emits JSON when piped. Reach for `search`/`find` only when you need a flag `q` does not expose.
+- Every `q` result carries a `read` field holding the exact next command. Use it verbatim rather than composing `--folder`/`--query` by hand.
+- Preferred search output for machine consumption: `tb q ...` (JSON) or `tb search --raw ...`.
 - Preferred exact-read follow-up after recent-mail triage: `tb read --message-id '<...>'`.
 - A negative result is only evidence when the tool says what it searched. `tb` names the folders it read on an empty result and lists candidates for an unknown `--folder`; quote those in any "no such mail" conclusion.
 - `--sync` fails rather than degrading to the stale cache. Check `tb doctor`'s `Sync display path` before a time-sensitive hunt; over plain ssh `tb` joins a running Betterbird/Thunderbird session automatically.

@@ -57,6 +57,9 @@ func main() {
 	case "find":
 		// Convenience: allow `tb find ...` as shorthand for `tb mail search ...`.
 		mailMain(append([]string{"search"}, os.Args[2:]...))
+	case "q", "ask":
+		// The agent-facing entry point: one high-recall search over everything.
+		mailMain(append([]string{"q"}, os.Args[2:]...))
 	case "search":
 		// Convenience: allow `tb search ...` as shorthand for `tb mail search ...`.
 		mailMain(append([]string{"search"}, os.Args[2:]...))
@@ -75,6 +78,7 @@ func usage() {
 	log.Println("  doctor    inspect profile detection, cache backend, and runtime dependencies")
 	log.Println("  update    update the installed binary from the latest GitHub release")
 	log.Println("  mail      work with Thunderbird profiles/mailboxes (profiles/folders/recent/search/compose)")
+	log.Println("  q         ONE high-recall search over every account and folder (JSON when piped)")
 	log.Println("  list      shorthand for: tb mail recent ... (no folder = the inbox)")
 	log.Println("  tail      shorthand for: tb mail unified ...")
 	log.Println("  head      shorthand for: tb mail unified --oldest ...")
@@ -85,6 +89,7 @@ func usage() {
 	log.Println("Examples:")
 	log.Println("  tb doctor")
 	log.Println("  tb mail profiles")
+	log.Println("  tb q \"parcel signals badge\"          # start here; searches everything, widens if needed")
 	log.Println("  tb list --limit 20 --raw")
 	log.Println("  tb list INBOX --account ops@example.org --limit 20 --raw")
 	log.Println("  tb tail --limit 20 --raw --ignore-account alerts@example.org")

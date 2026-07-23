@@ -332,6 +332,85 @@ func mailMain(args []string) {
 		if err := app.compose(*profileName, req, *openComposer, *sendNow, *verify); err != nil {
 			log.Fatalf("compose: %v", err)
 		}
+	case "q", "ask":
+		cmd := flag.NewFlagSet("q", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		account := cmd.String("account", "", "restrict to one account email")
+		accountShort := cmd.String("ac", "", "alias for --account")
+		limit := cmd.Int("limit", 10, "max results")
+		since := cmd.String("since", "", "only messages on/after YYYY-MM-DD")
+		till := cmd.String("till", "", "only messages on/before YYYY-MM-DD")
+		asJSON := cmd.Bool("json", false, "force JSON output (the default when stdout is not a terminal)")
+		text := cmd.Bool("text", false, "force human-readable output")
+		includeAll := cmd.Bool("include-noise", false, "do not demote Trash/Junk copies")
+		noRefresh := cmd.Bool("no-refresh", false, "never sync/refresh; search the cache as-is")
+		cmd.Parse(args[1:])
+		pos := cmd.Args()
+		if len(pos) == 0 {
+			log.Fatalf("q: a query is required, e.g. tb q \"parcel signals badge\"")
+		}
+		acct := *account
+		if acct == "" {
+			acct = *accountShort
+		}
+		var sinceTime, tillTime time.Time
+		if *since != "" {
+			t, err := time.Parse("2006-01-02", *since)
+			if err != nil {
+				log.Fatalf("q: bad --since date (use YYYY-MM-DD): %v", err)
+			}
+			sinceTime = t
+		}
+		if *till != "" {
+			t, err := time.Parse("2006-01-02", *till)
+			if err != nil {
+				log.Fatalf("q: bad --till date (use YYYY-MM-DD): %v", err)
+			}
+			tillTime = t.Add(24 * time.Hour)
+		}
+		useJSON := wantJSON(*asJSON) || (!*text && !stdoutIsTerminal())
+		if *text {
+			useJSON = false
+		}
+		if err := app.agentQuery(strings.Join(pos, " "), *profileName, acct, *limit, sinceTime, tillTime, useJSON, *includeAll, *noRefresh); err != nil {
+			log.Fatalf("q: %v", err)
+		}
+	case "credential", "credentials":
+		// The subcommand is read from the parsed positionals, not from
+		// args[1]: reorderArgs hoists flags ahead of positionals, so
+		// `credential set --host x` arrives here as `credential --host x set`.
+		cmd := flag.NewFlagSet("credential", flag.ExitOnError)
+		profileName := cmd.String("profile", "", "profile name or path")
+		scheme := cmd.String("scheme", "imap", "imap, smtp, pop3 or mailbox")
+		host := cmd.String("host", "", "server hostname the credential belongs to")
+		username := cmd.String("username", "", "login username")
+		password := cmd.String("password", "", "password (prefer --password-stdin)")
+		passwordStdin := cmd.Bool("password-stdin", false, "read the password from stdin; keeps it out of the process list and shell history")
+		cmd.Parse(args[1:])
+		sub := ""
+		if pos := cmd.Args(); len(pos) > 0 {
+			sub = pos[0]
+		}
+		switch sub {
+		case "list", "":
+			if err := app.listCredentials(*profileName); err != nil {
+				log.Fatalf("credential: %v", err)
+			}
+		case "set":
+			secret := *password
+			if *passwordStdin {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					log.Fatalf("credential: read password from stdin: %v", err)
+				}
+				secret = strings.TrimRight(string(data), "\r\n")
+			}
+			if err := app.setCredential(*profileName, *scheme, *host, *username, secret); err != nil {
+				log.Fatalf("credential: %v", err)
+			}
+		default:
+			log.Fatalf("credential: unknown subcommand %q (use list or set)", sub)
+		}
 	case "sentcheck":
 		cmd := flag.NewFlagSet("sentcheck", flag.ExitOnError)
 		profileName := cmd.String("profile", "", "profile name or path")
@@ -459,6 +538,8 @@ func mailUsage() {
 	log.Println("  sentcheck [--from a@b] [--subject s | --message-id id] [--profile p] [--mailbox Sent] [--wait 15s] [--limit N]  verify sent mail online via IMAP")
 	log.Println("  authcheck --from a@b --to c@d [--read-as x@y] [--wait 2m] [--mailboxes m1,m2]  send a test and print authentication headers from the receiving account")
 	log.Println("  move [--profile p] --account a@b --source-mailbox Junk --dest-mailbox INBOX [--message-id <id> | --subject s] [--limit N]  move matching remote IMAP mail")
+	log.Println("  credential set --scheme imap|smtp --host h --username u --password-stdin   store an account password in the profile (NSS-encrypted)")
+	log.Println("  credential list                      show which hosts have stored credentials (never the secrets)")
 }
 
 func newApp() *App {
@@ -2351,7 +2432,20 @@ func cleanUTF8(s string) string {
 }
 
 func printHits(hits []MailSummary, limit int, raw bool) error {
-	sort.Slice(hits, func(i, j int) bool {
+	sortHits(hits, "")
+	return printSortedHits(hits, limit, raw)
+}
+
+// sortHits orders results newest-first, but promotes messages whose subject or
+// sender matched the query. Pure date ordering buries the obvious answer under
+// unrelated recent mail whenever a common word appears in some newsletter body.
+func sortHits(hits []MailSummary, query string) {
+	score := relevanceScorer(query)
+	sort.SliceStable(hits, func(i, j int) bool {
+		si, sj := score(hits[i]), score(hits[j])
+		if si != sj {
+			return si > sj
+		}
 		if hits[i].When.IsZero() && hits[j].When.IsZero() {
 			return hits[i].Date > hits[j].Date
 		}
@@ -2363,6 +2457,51 @@ func printHits(hits []MailSummary, limit int, raw bool) error {
 		}
 		return hits[i].When.After(hits[j].When)
 	})
+}
+
+// relevanceScorer rates where a query's tokens matched. Subject and sender are
+// what a person means by "the mail about X"; a body-only hit is weaker.
+func relevanceScorer(query string) func(MailSummary) int {
+	tokens := queryTokens(query)
+	if len(tokens) == 0 {
+		return func(MailSummary) int { return 0 }
+	}
+	return func(m MailSummary) int {
+		subject := strings.ToLower(m.Subject)
+		from := strings.ToLower(m.From)
+		score := 0
+		allSubject := true
+		for _, t := range tokens {
+			switch {
+			case strings.Contains(subject, t):
+				score += 3
+			case strings.Contains(from, t):
+				score += 2
+			default:
+				allSubject = false
+			}
+		}
+		if allSubject {
+			score += 4 // every token in the subject: almost certainly the one
+		}
+		return score
+	}
+}
+
+func queryTokens(query string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	var out []string
+	for _, f := range fields {
+		if len(f) > 1 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func printSortedHits(hits []MailSummary, limit int, raw bool) error {
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
@@ -2373,11 +2512,16 @@ func printHits(hits []MailSummary, limit int, raw bool) error {
 			if !h.When.IsZero() {
 				date = h.When.Format("2006-01-02 15:04")
 			}
-			fmt.Printf("%s | %s | %s | %s | %s\n",
+			// Message-ID and the full folder path are NOT truncated: they are
+			// identifiers, and a search result whose id has been shortened
+			// cannot be fed back into `tb read`. Only the snippet is trimmed.
+			fmt.Printf("%s | %s | %s | %s | %s | %s | %s\n",
 				date,
-				truncate(h.Folder, 22),
-				truncate(h.From, 40),
-				truncate(h.Subject, 60),
+				h.Account,
+				h.Folder,
+				h.From,
+				h.Subject,
+				h.MessageID,
 				truncate(h.Snippet, 120))
 		}
 		return nil

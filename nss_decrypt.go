@@ -18,6 +18,7 @@ extern void *PK11_GetInternalKeySlot(void);
 extern void PK11_FreeSlot(void *slot);
 extern int PK11_Authenticate(void *slot, int loadCerts, void *wincx);
 extern int PK11SDR_Decrypt(SECItemCompat *data, SECItemCompat *result, void *cx);
+extern int PK11SDR_Encrypt(SECItemCompat *keyid, SECItemCompat *data, SECItemCompat *result, void *cx);
 extern void SECITEM_FreeItem(SECItemCompat *zap, int freeit);
 */
 import "C"
@@ -83,4 +84,52 @@ func decryptNSSSecret(profilePath, ciphertext string) (string, error) {
 
 	plain := C.GoBytes(unsafe.Pointer(out.data), C.int(out.len))
 	return string(plain), nil
+}
+
+// encryptNSSSecret produces the ciphertext Thunderbird stores in logins.json.
+//
+// The counterpart to decryptNSSSecret: without it tb can read a profile's
+// stored credentials but cannot provision a new account, because a password
+// carried over from another profile is useless — logins.json entries are
+// encrypted against that profile's own key4.db.
+func encryptNSSSecret(profilePath, plaintext string) (string, error) {
+	plainBuf := C.CBytes([]byte(plaintext))
+	defer C.free(plainBuf)
+
+	nssMu.Lock()
+	defer nssMu.Unlock()
+
+	config := C.CString("sql:" + profilePath)
+	defer C.free(unsafe.Pointer(config))
+
+	if rv := C.NSS_Init(config); rv != 0 {
+		return "", fmt.Errorf("NSS_Init failed")
+	}
+	defer C.NSS_Shutdown()
+
+	slot := C.PK11_GetInternalKeySlot()
+	if slot == nil {
+		return "", fmt.Errorf("PK11_GetInternalKeySlot failed")
+	}
+	defer C.PK11_FreeSlot(slot)
+
+	if rv := C.PK11_Authenticate(slot, 1, nil); rv != 0 {
+		return "", fmt.Errorf("PK11_Authenticate failed")
+	}
+
+	// An empty keyid selects the profile's default SDR key, which is what
+	// Thunderbird itself uses.
+	var keyid C.SECItemCompat
+	in := C.SECItemCompat{
+		data: (*C.uchar)(plainBuf),
+		len:  C.uint(len(plaintext)),
+	}
+	var out C.SECItemCompat
+	if rv := C.PK11SDR_Encrypt(&keyid, &in, &out, nil); rv != 0 {
+		return "", fmt.Errorf("PK11SDR_Encrypt failed")
+	}
+	defer C.SECITEM_FreeItem(&out, 0)
+
+	cipher := C.GoBytes(unsafe.Pointer(out.data), C.int(out.len))
+	return base64.StdEncoding.EncodeToString(cipher), nil
 }

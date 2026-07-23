@@ -8,6 +8,77 @@ This file is the second product surface after the README. It should tell a serio
 
 - No user-visible changes yet.
 
+## [3.3.0] - 2026-07-23
+
+`tb`'s main consumer is a coding agent, not a person at a terminal. This release
+reshapes the search path around that: fewer decisions to make, nothing truncated,
+and a result you can act on without a follow-up guess.
+
+### `tb q` — one command instead of a decision tree
+
+```sh
+tb q "parcel signals badge"
+```
+
+Searches **every account and every folder** (Junk and Trash included, just ranked
+below real mail), refreshes the cache if it is stale, ranks by relevance, and
+**widens automatically** when nothing matches — reporting which strategy worked:
+
+1. every token, exact
+2. every token, prefix (`invoic` finds `invoices`)
+3. any token, ranked
+4. and if a date filter was the problem, it says so and shows the matches outside it
+
+```
+notes: ["no exact-token match; matched on token prefixes", "match strategy: prefix"]
+```
+
+### JSON output that round-trips
+
+`tb q` emits JSON automatically when stdout is not a terminal (`--text` forces
+human output, `TB_JSON=1` forces JSON everywhere). Every result carries the
+**exact command to read it**:
+
+```json
+{
+  "message_id": "<26NPWXWGRVR_...@zendesk.example>",
+  "subject": "[Parcel] Re: Parcel Signals badge not showing up ...",
+  "folder": "ImapMail/mail.example-1.com/INBOX",
+  "date": "2026-07-23T11:07:51Z",
+  "read": "tb read --message-id \"<26NPWXWGRVR_...@zendesk.example>\""
+}
+```
+
+Results also report their **scope** — profile, account, folders searched, cache
+age — so an empty result can never be confused with having searched the wrong place.
+
+### Search results are no longer truncated
+
+`tb find --raw` truncated the folder to 22 characters and **omitted the
+Message-ID entirely**, so a search result could not be fed back into `tb read`
+without guessing at `--query` again. Raw output now carries the account, the full
+folder path and the full Message-ID; only the snippet is trimmed.
+
+### Relevance ranking
+
+Results were ordered purely by date, which buried the obvious answer whenever a
+common word appeared in a recent newsletter. Matches in the subject or sender now
+outrank body-only matches, with recency as the tiebreak.
+
+### Storing account passwords
+
+```sh
+tb mail credential set --scheme imap --host mail.example.com \
+    --username ops@example.com --password-stdin
+tb mail credential list
+```
+
+Credentials in `logins.json` are encrypted against the profile's own `key4.db`,
+so they cannot be copied between profiles — migrating a profile used to leave any
+account whose password lived only in the old one unusable. `tb` can now write
+them (NSS `PK11SDR_Encrypt`), backs up `logins.json` first, and verifies the
+credential reads back before reporting success.
+
 ## [3.2.0] - 2026-07-23
 
 Incremental ingest, plus the fixes found by making a headless LXC container the

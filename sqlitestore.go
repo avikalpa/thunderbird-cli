@@ -164,8 +164,11 @@ func (s *sqliteStore) Search(ctx context.Context, q queryOptions) ([]MailSummary
 		return "?"
 	}
 
-	if q.query != "" {
-		match := ftsQuery(q.query)
+	if q.ftsExpr != "" || q.query != "" {
+		match := q.ftsExpr
+		if match == "" {
+			match = ftsQuery(q.query)
+		}
 		if match != "" {
 			joins = append(joins, "JOIN tb_messages_fts fts ON fts.rowid = m.rowid")
 			where = append(where, fmt.Sprintf("tb_messages_fts MATCH %s", add(match)))
@@ -197,7 +200,7 @@ FROM tb_messages m
 		query += "WHERE " + strings.Join(where, " AND ") + "\n"
 	}
 	order := "ORDER BY m.when_ts DESC, m.date_str DESC"
-	if q.query != "" {
+	if q.ftsExpr != "" || q.query != "" {
 		order = "ORDER BY bm25(tb_messages_fts), m.when_ts DESC, m.date_str DESC"
 	}
 	query += order + "\n"
@@ -227,11 +230,26 @@ FROM tb_messages m
 }
 
 func ftsQuery(q string) string {
+	return ftsExpression(q, "AND", false)
+}
+
+// ftsExpression builds an FTS5 MATCH expression from a plain query.
+//
+// join is "AND" (every token must appear) or "OR" (any token, ranked by bm25).
+// prefix appends the FTS5 prefix operator so "invoic" also matches "invoices" —
+// exact-token-only matching is a common reason a search that should obviously
+// hit returns nothing.
+func ftsExpression(q, join string, prefix bool) string {
 	tokens := strings.Fields(strings.TrimSpace(q))
-	for i := range tokens {
-		tokens[i] = `"` + strings.ReplaceAll(tokens[i], `"`, `""`) + `"`
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		quoted := `"` + strings.ReplaceAll(t, `"`, `""`) + `"`
+		if prefix {
+			quoted += "*"
+		}
+		out = append(out, quoted)
 	}
-	return strings.Join(tokens, " AND ")
+	return strings.Join(out, " "+join+" ")
 }
 
 func (s *sqliteStore) CountMessages(ctx context.Context, profile string) (int64, error) {

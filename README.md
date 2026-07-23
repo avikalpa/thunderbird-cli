@@ -103,6 +103,27 @@ A mail tool that quietly answers from stale data is worse than one that fails, b
 - a reply that cannot carry its threading headers is refused rather than sent unthreaded
 - `tb doctor` tells you which `tb` binary a shell will actually run, and warns when copies disagree
 
+## For Coding Agents: Start With `tb q`
+
+```bash
+tb q "parcel signals badge"
+```
+
+One command, no decision tree. It searches every account and folder (Junk and Trash included, ranked below real mail), refreshes the cache if stale, ranks by relevance, and widens the match automatically when nothing hits — telling you which strategy worked.
+
+Piped output is JSON, and every result carries the exact command to read it:
+
+```json
+{
+  "message_id": "<...@zendesk.example>",
+  "subject": "[Parcel] Re: Parcel Signals badge not showing up ...",
+  "date": "2026-07-23T11:07:51Z",
+  "read": "tb read --message-id \"<...@zendesk.example>\""
+}
+```
+
+Results carry their scope (profile, account, folders searched, cache age), so an empty result is never confused with searching the wrong place. `--text` forces human output; `TB_JSON=1` forces JSON everywhere.
+
 ## Simple Commands
 
 The `mail ...` subcommands remain the full interface, but the fast operator path is now:

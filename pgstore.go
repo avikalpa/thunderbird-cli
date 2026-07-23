@@ -207,7 +207,11 @@ WHERE %s
 }
 
 type queryOptions struct {
-	query      string
+	query string
+	// ftsExpr, when set, is used verbatim as the SQLite FTS5 MATCH expression
+	// instead of deriving one from query. It lets a caller widen recall
+	// (prefix or OR matching) without the store guessing at intent.
+	ftsExpr    string
 	account    string
 	folderLike string
 	since      time.Time
